@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=../workflow.schema.json
+id: commit-message
+title: Commit Message
+description: Generate a commit message for local repository changes.
+type: commit-message
+followUps:
+  - openReasoning
+  - commitChanges
+inputs:
+  - id: localChanges
+    label: Repository
+    type: git-local-changes-context
+    required: true
+promptTemplate: |
+  You are an experienced software engineer preparing a Git commit.
+
+  Write a concise commit message for the current local repository changes.
+  Use the local diff as the source of truth. Do not invent changes that are not present in the diff.
+
+  Return exactly this format:
+
+  Subject: <single-line commit subject, imperative mood, 72 characters or fewer>
+
+  Body:
+  <optional commit body wrapped naturally at about 72 characters per line, or omit this section entirely if the subject is enough>
+
+  The subject should explain what changed. The body should explain why it changed, any risk, and any follow-up worth calling out.
+
+  Repository: {{owner}}/{{repo}}
+  Repository path: {{repoPath}}
+  Workspace folder: {{workspaceFolder}}
+  Current branch: {{currentBranch}}
+  Default branch: {{defaultBranch}}
+  Changed files count: {{changedFilesCount}}
+
+  Changed files:
+  {{changedFiles}}
+
+  Detailed diff:
+  {{fileSections}}

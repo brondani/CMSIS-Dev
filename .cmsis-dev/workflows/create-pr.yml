@@ -1,0 +1,53 @@
+# yaml-language-server: $schema=../workflow.schema.json
+id: create-pr
+title: Create PR
+description: Draft a pull request from committed branch changes relative to the default branch.
+type: create-pr
+followUps:
+  - openReasoning
+  - submitPr
+inputs:
+  - id: localChanges
+    label: Repository
+    type: git-local-changes-context
+    required: true
+promptTemplate: |
+  You are an experienced software engineer preparing a pull request.
+
+  Write a concise pull request title and body for committed branch changes relative to the default branch.
+  Use the committed branch diff as the main source of truth.
+  Do not include uncommitted or untracked working tree changes.
+  If a previous "Review Changes" result is available, use it only to improve clarity and coverage.
+  If repository pull request templates are available, follow their structure but keep the result concise and remove empty sections.
+  Do not invent changes that are not present in the diff.
+
+  Return exactly this format:
+
+  Title: <single-line PR title>
+
+  Body:
+  <markdown PR body>
+
+  The body should explain:
+  - what changed
+  - why it changed
+  - any risk, limitation, or follow-up worth calling out
+
+  Repository: {{owner}}/{{repo}}
+  Repository path: {{repoPath}}
+  Workspace folder: {{workspaceFolder}}
+  Current branch: {{currentBranch}}
+  Default branch: {{defaultBranch}}
+  Changed files count: {{changedFilesCount}}
+
+  Changed files:
+  {{changedFiles}}
+
+  Previous local review:
+  {{latestLocalReview}}
+
+  Repository PR templates:
+  {{pullRequestTemplates}}
+
+  Detailed diff:
+  {{fileSections}}

@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=../workflow.schema.json
+id: review-pr
+title: Review PR
+description: Fetch a pull request and generate a detailed review draft.
+type: review-pr
+followUps:
+  - openReasoning
+  - openPr
+  - postComment
+inputs:
+  - id: pr
+    label: Pull Request
+    type: github-pr-context
+    required: true
+promptTemplate: |
+  You are a senior reviewer. Produce PR feedback that can be posted directly to GitHub without another approval step.
+  Focus on correctness, regressions, edge cases, reliability, security, and tests.
+  Use Markdown heading levels consistently. Top-level review sections must use level-2 headings, and any subsections under them must use level-3 headings or lower:
+  ## 1. Findings (ordered by severity: High, Medium, Low)
+  ## 2. Suggested fixes per finding
+  ## 3. Test gaps
+  ## 4. Final summary
+  For every finding include: file path, why it matters, and concrete fix guidance.
+  When a finding can be fixed by changing code in a single changed file, also add an "Inline suggestions" section at the end using this exact block format:
+  ```cmsis-dev-suggestion
+  file: path/from/repo/root
+  line: changed-line-number-in-the-new-file
+  body: Short review comment explaining the change.
+  suggestion:
+  replacement code only, without Markdown fences
+  ```
+  Only use line numbers that appear on added or context lines in the provided patch for that file. Do not create suggestion blocks for deleted-only lines, binary files, or changes that require edits across multiple files.
+  Keep the main review body self-contained; the inline suggestions will be posted as GitHub PR review comments when possible.
+  If no issues are found, say so explicitly and list residual risks.
+
+  Repository: {{owner}}/{{repo}}
+  PR: #{{prNumber}} {{prTitle}}
+  Author: @{{author}}
+  Branch: {{headRef}} -> {{baseRef}}
+
+  PR Description:
+  {{prBody}}
+
+  Changed files:
+  {{fileSections}}

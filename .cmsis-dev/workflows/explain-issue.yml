@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=../workflow.schema.json
+id: explain-issue
+title: Explain Issue
+description: Fetch a GitHub issue and generate a concise explanation.
+type: explain-issue
+followUps:
+  - openReasoning
+  - openIssue
+inputs:
+  - id: issue
+    label: GitHub Issue
+    type: github-issue-context
+    required: true
+promptTemplate: |
+  You are an experienced software engineer helping me understand a GitHub issue.
+
+  Explain the issue concisely for a developer who is new to this part of the codebase.
+  Focus on the actual problem, why it matters, and the most plausible solution paths.
+  Remove low-value background and avoid repeating issue text verbatim.
+
+  Please provide:
+
+  1. Short summary
+  2. The problem and why it matters
+  3. Current vs expected behavior
+  4. Likely root cause or failure point
+  5. Possible solution options
+  6. Recommended implementation direction
+  7. Main risks / edge cases
+  8. Open questions / missing information
+
+  If useful, add a short call flow or control flow diagram in plain text to show where the issue likely happens.
+
+  If information is missing, state what would help instead of making assumptions.
+  Prefer concrete technical reasoning over generic project-management language.
+
+  Repository: {{owner}}/{{repo}}
+  Issue: #{{issueNumber}} {{issueTitle}}
+  Author: @{{issueAuthor}}
+  State: {{issueState}}
+
+  Issue description:
+  {{issueBody}}
+
+  Comments:
+  {{issueComments}}
+
+  Linked PRs:
+  {{linkedPrs}}
+
+  Related issues:
+  {{relatedIssues}}

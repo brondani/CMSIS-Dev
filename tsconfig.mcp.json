@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "out"
+  },
+  "include": [
+    "src/mcp/**/*.ts",
+    "src/githubCore.ts",
+    "src/localGitCore.ts",
+    "src/types.ts",
+    "src/workflowCore.ts",
+    "src/workflowContextCore.ts",
+    "src/workflowContextResolverCore.ts",
+    "src/workflowRegistryCore.ts"
+  ],
+  "exclude": []
+}
