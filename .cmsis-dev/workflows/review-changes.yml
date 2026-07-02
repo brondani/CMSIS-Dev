@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=../workflow.schema.json
+id: review-changes
+title: Review Changes
+description: Review local repository changes.
+type: review-changes
+followUps:
+  - openReasoning
+  - openCodexChat
+openCodexChatPromptTemplate: |
+  Use the attached CMSIS-Dev reasoning file as the source of truth.
+  It contains the generated review plus the workflow context that produced it.
+  Identify the concrete review suggestions worth implementing in this workspace.
+  Start with a short plan, then implement the accepted changes.
+  If any finding is unclear, unsupported, or too risky, explain that before editing.
+inputs:
+  - id: localChanges
+    label: Repository
+    type: git-local-changes-context
+    required: true
+promptTemplate: |
+  You are Codex acting as a senior reviewer. Produce a detailed, actionable code review for the local changes in this repository compared to the HEAD of the default branch.
+  Focus on correctness, regressions, edge cases, reliability, security, maintainability, and tests.
+  Use this output format:
+  1) Findings (ordered by severity: High, Medium, Low)
+  2) Suggested fixes per finding
+  3) Test gaps
+  4) Final summary
+  For every finding include: file path, why it matters, and concrete fix guidance.
+  If no issues are found, say so explicitly and list residual risks.
+
+  Repository: {{owner}}/{{repo}}
+  Repository path: {{repoPath}}
+  Workspace folder: {{workspaceFolder}}
+  Current branch: {{currentBranch}}
+  Default branch: {{defaultBranch}}
+  Changed files count: {{changedFilesCount}}
+
+  Changed files:
+  {{changedFiles}}
+
+  Detailed diff:
+  {{fileSections}}

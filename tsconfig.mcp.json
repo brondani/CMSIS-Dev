@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src/mcp",
+    "outDir": "out/mcp"
+  },
+  "include": ["src/mcp/**/*.ts"],
+  "exclude": []
+}

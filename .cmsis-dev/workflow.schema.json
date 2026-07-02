@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cmsis-dev.local/workflow.schema.json",
+  "title": "CMSIS-Dev Workflow",
+  "description": "Schema for CMSIS-Dev workflow YAML files.",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/workflowDefinition"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "workflow": {
+          "$ref": "#/definitions/workflowDefinition"
+        }
+      },
+      "required": [
+        "workflow"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "workflows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/workflowDefinition"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "workflows"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "definitions": {
+    "workflowDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "description",
+        "type",
+        "inputs"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promptTemplate": {
+          "type": "string"
+        },
+        "openCodexChatPromptTemplate": {
+          "type": "string"
+        },
+        "followUps": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "openReasoning",
+              "openPr",
+              "openIssue",
+              "postComment",
+              "submitPr",
+              "openCodexChat"
+            ]
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/workflowInput"
+          }
+        }
+      }
+    },
+    "workflowInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "github-pr-context",
+            "github-issue-context",
+            "git-local-changes-context"
+          ]
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

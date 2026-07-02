@@ -1,0 +1,237 @@
+{
+  "name": "cmsis-dev",
+  "displayName": "CMSIS-Dev",
+  "description": "CMSIS development helper extension with AI workflows and an MCP server.",
+  "version": "0.0.1",
+  "publisher": "cmsis-dev",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:cmsisDev.actions",
+    "onView:cmsisDev.workflows",
+    "onView:cmsisDev.runs",
+    "onCommand:cmsisDev.runAction",
+    "onCommand:cmsisDev.initializeWorkflows",
+    "onCommand:cmsisDev.refreshWorkflows",
+    "onCommand:cmsisDev.refreshRuns",
+    "onCommand:cmsisDev.setGitHubToken",
+    "onCommand:cmsisDev.clearGitHubToken",
+    "onCommand:cmsisDev.openReasoningForActiveOutput",
+    "onCommand:cmsisDev.postCommentForActiveOutput",
+    "onCommand:cmsisDev.openPrForActiveOutput",
+    "onCommand:cmsisDev.openIssueForActiveOutput",
+    "onCommand:cmsisDev.openCodexChatForActiveOutput",
+    "onCommand:cmsisDev.submitPrForActiveOutput"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cmsisDev.runAction",
+        "title": "CMSIS-Dev: Run AI Action"
+      },
+      {
+        "command": "cmsisDev.initializeWorkflows",
+        "title": "CMSIS-Dev: Initialize Workflow Config"
+      },
+      {
+        "command": "cmsisDev.refreshRuns",
+        "title": "CMSIS-Dev: Refresh Runs",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cmsisDev.refreshWorkflows",
+        "title": "CMSIS-Dev: Refresh Workflows",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cmsisDev.setGitHubToken",
+        "title": "CMSIS-Dev: Set GitHub Token"
+      },
+      {
+        "command": "cmsisDev.clearGitHubToken",
+        "title": "CMSIS-Dev: Clear GitHub Token"
+      },
+      {
+        "command": "cmsisDev.openReasoningForActiveOutput",
+        "title": "CMSIS-Dev: Open Reasoning",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "cmsisDev.postCommentForActiveOutput",
+        "title": "CMSIS-Dev: Post Comment",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "cmsisDev.openPrForActiveOutput",
+        "title": "CMSIS-Dev: Open PR",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "cmsisDev.openIssueForActiveOutput",
+        "title": "CMSIS-Dev: Open Issue",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "cmsisDev.openCodexChatForActiveOutput",
+        "title": "CMSIS-Dev: Open in Codex Chat",
+        "icon": "$(send)"
+      },
+      {
+        "command": "cmsisDev.submitPrForActiveOutput",
+        "title": "CMSIS-Dev: Submit PR",
+        "icon": "$(git-pull-request-create)"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "cmsisDev.actions",
+          "name": "CMSIS-Dev Actions"
+        },
+        {
+          "id": "cmsisDev.workflows",
+          "name": "CMSIS-Dev Workflows"
+        },
+        {
+          "id": "cmsisDev.runs",
+          "name": "CMSIS-Dev Runs"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "cmsisDev.initializeWorkflows",
+          "when": "view == cmsisDev.actions",
+          "group": "navigation"
+        },
+        {
+          "command": "cmsisDev.refreshWorkflows",
+          "when": "view == cmsisDev.workflows",
+          "group": "navigation"
+        },
+        {
+          "command": "cmsisDev.refreshRuns",
+          "when": "view == cmsisDev.runs",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "cmsisDev.openPrForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenPr",
+          "group": "navigation@9"
+        },
+        {
+          "command": "cmsisDev.openIssueForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenIssue",
+          "group": "navigation@9"
+        },
+        {
+          "command": "cmsisDev.openReasoningForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenReasoning",
+          "group": "navigation@10"
+        },
+        {
+          "command": "cmsisDev.postCommentForActiveOutput",
+          "when": "cmsisDev.activeOutput.canPostComment",
+          "group": "navigation@11"
+        },
+        {
+          "command": "cmsisDev.openCodexChatForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenCodexChat",
+          "group": "navigation@12"
+        },
+        {
+          "command": "cmsisDev.submitPrForActiveOutput",
+          "when": "cmsisDev.activeOutput.canSubmitPr",
+          "group": "navigation@13"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "cmsisDev.openPrForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenPr",
+          "group": "2_cmsisDev@1"
+        },
+        {
+          "command": "cmsisDev.openIssueForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenIssue",
+          "group": "2_cmsisDev@2"
+        },
+        {
+          "command": "cmsisDev.openReasoningForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenReasoning",
+          "group": "2_cmsisDev@3"
+        },
+        {
+          "command": "cmsisDev.postCommentForActiveOutput",
+          "when": "cmsisDev.activeOutput.canPostComment",
+          "group": "2_cmsisDev@4"
+        },
+        {
+          "command": "cmsisDev.openCodexChatForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenCodexChat",
+          "group": "2_cmsisDev@5"
+        },
+        {
+          "command": "cmsisDev.submitPrForActiveOutput",
+          "when": "cmsisDev.activeOutput.canSubmitPr",
+          "group": "2_cmsisDev@6"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CMSIS-Dev",
+      "properties": {
+        "cmsisDev.workflowConfigPath": {
+          "type": "string",
+          "default": ".cmsis-dev/workflows",
+          "description": "Relative path to the workflow configuration file or directory."
+        },
+        "cmsisDev.autoOpenChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attempt to open the Copilot Chat view with the generated review prompt."
+        },
+        "cmsisDev.reviewEngine": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "copilot",
+            "codex"
+          ],
+          "default": "codex",
+          "description": "AI engine used for Review PR. Choose ask to prompt each run."
+        },
+        "cmsisDev.codexModelPattern": {
+          "type": "string",
+          "default": "codex|gpt-5",
+          "description": "Regex used to identify Codex-capable chat models when reviewEngine is codex."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build:mcp": "tsc -p tsconfig.mcp.json",
+    "vscode:prepublish": "npm run compile && npm run build:mcp"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.11",
+    "@types/vscode": "^1.95.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.2",
+    "yaml": "^2.6.1",
+    "zod": "^3.23.8"
+  }
+}

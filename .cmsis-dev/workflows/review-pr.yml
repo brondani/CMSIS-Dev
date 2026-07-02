@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=../workflow.schema.json
+id: review-pr
+title: Review PR
+description: Fetch a pull request and generate a detailed review draft.
+type: review-pr
+followUps:
+  - openReasoning
+  - openPr
+  - postComment
+  - openCodexChat
+openCodexChatPromptTemplate: |
+  Use the attached CMSIS-Dev reasoning file as the source of truth.
+  It contains the generated review plus the workflow context that produced it.
+  Identify the concrete review suggestions worth implementing in this workspace.
+  Start with a short plan, then implement the accepted changes.
+  If any finding is unclear, unsupported, or too risky, explain that before editing.
+inputs:
+  - id: pr
+    label: Pull Request
+    type: github-pr-context
+    required: true
+promptTemplate: |
+  You are Codex acting as a senior reviewer. Produce a detailed, actionable code review for this pull request.
+  Focus on correctness, regressions, edge cases, reliability, security, and tests.
+  Use this output format:
+  1) Findings (ordered by severity: High, Medium, Low)
+  2) Suggested fixes per finding
+  3) Test gaps
+  4) Final summary
+  For every finding include: file path, why it matters, and concrete fix guidance.
+  If no issues are found, say so explicitly and list residual risks.
+
+  Repository: {{owner}}/{{repo}}
+  PR: #{{prNumber}} {{prTitle}}
+  Author: @{{author}}
+  Branch: {{headRef}} -> {{baseRef}}
+
+  PR Description:
+  {{prBody}}
+
+  Changed files:
+  {{fileSections}}
