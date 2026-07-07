@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { getConfiguredAiBackend, resolveConfiguredLanguageModel, formatLanguageModelLabel } from "../aiSettings";
 import {
   resolveEffectiveCodexModel,
   resolveEffectiveCodexReasoningEffort
@@ -31,7 +32,7 @@ import {
 } from "../types";
 import { resolveWorkflowRunsDirUri } from "../workflowConfig";
 
-type ReviewEngine = "codex";
+type ReviewEngine = "codexCli" | "vscodeLm";
 
 export interface PromptWorkflowOptions {
   onStatus?: (status: string) => void;
@@ -40,7 +41,7 @@ export interface PromptWorkflowOptions {
 export interface PromptWorkflowResult {
   engine?: ReviewEngine;
   generated: boolean;
-  handedOffToCodexChat: boolean;
+  handedOffToChat: boolean;
   canceled?: boolean;
 }
 
@@ -93,6 +94,7 @@ interface ActionOutputMetadata {
   workflowId: string;
   workflowTitle: string;
   followUps: WorkflowFollowUp[];
+  openChatPrompt?: string;
   openCodexChatPrompt?: string;
   pullRequestDraft?: PullRequestDraft;
   engine: ReviewEngine;
@@ -108,8 +110,15 @@ interface ActionOutputMetadata {
   localChangesContext?: SelectedLocalChangesContext;
 }
 
-interface CodexCliOptions {
+interface GenerationOptions {
   onEvent?: (event: Record<string, unknown>) => void | Promise<void>;
+  onStatus?: (status: string) => void;
+  model?: vscode.LanguageModelChat;
+}
+
+export interface PromptWorkflowChatOptions {
+  additionalInstructions?: string;
+  model: vscode.LanguageModelChat;
   onStatus?: (status: string) => void;
 }
 
@@ -119,28 +128,29 @@ export interface ActiveOutputFollowUpState {
   canOpenIssue: boolean;
   canPostComment: boolean;
   canSubmitPr: boolean;
+  canOpenChat: boolean;
   canOpenCodexChat: boolean;
 }
 
 const DEFAULT_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning"];
-const LEGACY_PR_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "openPr", "postComment", "openCodexChat"];
+const LEGACY_PR_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "openPr", "postComment", "openChat"];
 const LEGACY_CREATE_PR_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "submitPr"];
-const LEGACY_REVIEW_LOCAL_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "openCodexChat"];
-const LEGACY_ISSUE_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "openIssue", "openCodexChat"];
+const LEGACY_REVIEW_LOCAL_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "openChat"];
+const LEGACY_ISSUE_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "openIssue", "openChat"];
 const EMPTY_ACTIVE_OUTPUT_FOLLOW_UP_STATE: ActiveOutputFollowUpState = {
   canOpenReasoning: false,
   canOpenPr: false,
   canOpenIssue: false,
   canPostComment: false,
   canSubmitPr: false,
+  canOpenChat: false,
   canOpenCodexChat: false
 };
 
-const CODEX_FOCUS_COMMANDS = ["chatgpt.openSidebar"];
-const CODEX_NEW_THREAD_COMMANDS = ["chatgpt.newChat", "chatgpt.newCodexPanel"];
-const CODEX_ADD_FILE_COMMAND = "chatgpt.addFileToThread";
+const CHAT_FOCUS_COMMANDS = ["workbench.panel.chat.view.copilot.focus", "workbench.action.chat.open"];
+const CHAT_NEW_THREAD_COMMANDS = ["workbench.action.chat.new", "workbench.action.chat.open"];
 
-interface CodexChatLaunchResult {
+interface ChatLaunchResult {
   focused: boolean;
   createdThread: boolean;
   commands: string[];
@@ -166,123 +176,15 @@ export async function runPromptWorkflow(
   if (!resolved) {
     return {
       generated: false,
-      handedOffToCodexChat: false,
+      handedOffToChat: false,
       canceled: true
     };
   }
 
-  reportStatus(`Preparing prompt for ${workflow.title}`);
-  const prompt = renderPromptTemplate(promptTemplate, resolved.values);
-  const openCodexChatPrompt = workflow.openCodexChatPromptTemplate?.trim()
-    ? renderPromptTemplate(workflow.openCodexChatPromptTemplate, resolved.values)
-    : undefined;
-  const engine: ReviewEngine = "codex";
-  const followUps = resolveWorkflowFollowUps(workflow);
-  let pullRequestDraft: PullRequestDraft | undefined;
-
-  const liveReasoningFile = await createTransientReasoningFile();
-  const liveReasoningPayload: Record<string, unknown> = {
-    timestamp: new Date().toISOString(),
-    status: "running",
-    phase: "generating",
-    workflowId: workflow.id,
-    workflowTitle: workflow.title,
-    followUps,
-    openCodexChatPrompt,
-    pullRequestDraft,
-    engine,
-    prompt,
-    inputValues: resolved.values,
-    prContext: resolved.prContext,
-    issueContext: resolved.issueContext,
-    localChangesContext: resolved.localChangesContext,
-    generatedOutput: undefined,
-    outputFile: undefined
-  };
-  await updateReasoningFile(liveReasoningFile, liveReasoningPayload);
-
-  liveReasoningPayload.phase = "codex-cli";
-  liveReasoningPayload.status = "running";
-  await updateReasoningFile(liveReasoningFile, liveReasoningPayload);
-  reportStatus(`Generating ${workflow.title} with Codex CLI`);
-  const generated = await tryGenerateWithCodexCli(prompt, {
-    onStatus: reportStatus,
-    onEvent: async (event) => {
-      liveReasoningPayload.codexCliEvent = event;
-      await updateReasoningFile(liveReasoningFile, liveReasoningPayload);
-    }
+  const execution = await executeWorkflowGeneration(workflow, resolved, {
+    onStatus: reportStatus
   });
-
-  if (!generated) {
-    liveReasoningPayload.phase = "failed";
-    liveReasoningPayload.status = "failed";
-    await updateReasoningFile(liveReasoningFile, liveReasoningPayload);
-    throw new Error(`The review could not be generated for '${workflow.title}'. No output files were saved.`);
-  }
-
-  pullRequestDraft = workflow.id === "create-pr" || workflow.type === "create-pr" ? parsePullRequestDraft(generated.content) : undefined;
-
-  reportStatus(`Saving ${workflow.title} output`);
-  const output = renderOutputWithExecutionInfo(
-    workflow.id === "create-pr" || workflow.type === "create-pr"
-      ? renderPullRequestDraftOutput(generated.content, pullRequestDraft)
-      : generated.content,
-    {
-      agentName: generated.agentName,
-      modelName: generated.modelName
-    }
-  );
-  const outputFile = await writeOutputFile(
-    workflow.id,
-    output,
-    resolved.prContext,
-    resolved.issueContext,
-    resolved.localChangesContext
-  );
-  const reasoningPayload: Record<string, unknown> = {
-    timestamp: new Date().toISOString(),
-    status: "completed",
-    phase: "completed",
-    workflowId: workflow.id,
-    workflowTitle: workflow.title,
-    followUps,
-    openCodexChatPrompt,
-    pullRequestDraft,
-    engine,
-    agentName: generated.agentName,
-    modelName: generated.modelName,
-    prompt,
-    inputValues: resolved.values,
-    prContext: resolved.prContext,
-    issueContext: resolved.issueContext,
-    localChangesContext: resolved.localChangesContext,
-    generatedOutput: output,
-    outputFile: outputFile.fsPath
-  };
-  await updateReasoningFile(liveReasoningFile, reasoningPayload);
-  const reasoningFile = await writeReasoningFile(outputFile, reasoningPayload);
-  reasoningPayload.reasoningFile = reasoningFile.fsPath;
-  await updateReasoningFile(liveReasoningFile, reasoningPayload);
-  await updateReasoningFile(reasoningFile, reasoningPayload);
-
-  const metadata: ActionOutputMetadata = {
-    workflowId: workflow.id,
-    workflowTitle: workflow.title,
-    followUps,
-    openCodexChatPrompt,
-    pullRequestDraft,
-    engine,
-    agentName: generated.agentName,
-    modelName: generated.modelName,
-    prompt,
-    inputValues: resolved.values,
-    generatedOutput: output,
-    outputFile: outputFile.fsPath,
-    reasoningFile: reasoningFile.fsPath,
-    prContext: resolved.prContext,
-    issueContext: resolved.issueContext,
-    localChangesContext: resolved.localChangesContext
-  };
+  const { metadata, outputFile, reasoningFile, output } = execution;
   await writeOutputMetadata(outputFile, metadata);
   void vscode.commands.executeCommand("cmsisDev.refreshRuns");
 
@@ -299,8 +201,8 @@ export async function runPromptWorkflow(
   if (followUpState.canOpenIssue) {
     actions.push("Open Issue");
   }
-  if (followUpState.canOpenCodexChat) {
-    actions.push("Open in Codex Chat");
+  if (followUpState.canOpenChat) {
+    actions.push("Open in Chat");
   }
   if (followUpState.canSubmitPr) {
     actions.push("Submit PR");
@@ -332,8 +234,8 @@ export async function runPromptWorkflow(
     await vscode.window.showTextDocument(doc, { preview: false });
   }
 
-  if (action === "Open in Codex Chat") {
-    await openCodexChatFromMetadata(metadata);
+  if (action === "Open in Chat") {
+    await openChatFromMetadata(metadata);
   }
 
   if (action === "Submit PR") {
@@ -345,9 +247,171 @@ export async function runPromptWorkflow(
   }
 
   return {
-    engine,
+    engine: metadata.engine,
     generated: true,
-    handedOffToCodexChat: false
+    handedOffToChat: false
+  };
+}
+
+export async function runPromptWorkflowInChat(
+  workflow: WorkflowDefinition,
+  options: PromptWorkflowChatOptions
+): Promise<{ metadata: ActionOutputMetadata; outputFile: vscode.Uri; reasoningFile: vscode.Uri; output: string } | undefined> {
+  const reportStatus = (status: string): void => {
+    options.onStatus?.(status);
+  };
+
+  reportStatus(`Collecting inputs for ${workflow.title}`);
+  const token = await getGitHubToken();
+  const resolved = await collectInputValues(workflow, token);
+  if (!resolved) {
+    return undefined;
+  }
+
+  return executeWorkflowGeneration(workflow, resolved, {
+    additionalInstructions: options.additionalInstructions,
+    model: options.model,
+    onStatus: reportStatus
+  });
+}
+
+async function executeWorkflowGeneration(
+  workflow: WorkflowDefinition,
+  resolved: ResolvedInputs,
+  options: {
+    additionalInstructions?: string;
+    model?: vscode.LanguageModelChat;
+    onStatus?: (status: string) => void;
+  } = {}
+): Promise<{ metadata: ActionOutputMetadata; outputFile: vscode.Uri; reasoningFile: vscode.Uri; output: string }> {
+  const promptTemplate = workflow.promptTemplate?.trim();
+  if (!promptTemplate) {
+    throw new Error(`Missing promptTemplate in workflow '${workflow.id}'.`);
+  }
+
+  options.onStatus?.(`Preparing prompt for ${workflow.title}`);
+  const prompt = buildWorkflowPrompt(promptTemplate, resolved.values, options.additionalInstructions);
+  const openChatPromptTemplate = workflow.openChatPromptTemplate?.trim() || workflow.openCodexChatPromptTemplate?.trim();
+  const openChatPrompt = openChatPromptTemplate ? renderPromptTemplate(openChatPromptTemplate, resolved.values) : undefined;
+  const followUps = resolveWorkflowFollowUps(workflow);
+  const engine = resolveWorkflowEngine(options.model);
+  let pullRequestDraft: PullRequestDraft | undefined;
+
+  const liveReasoningFile = await createTransientReasoningFile();
+  const liveReasoningPayload: Record<string, unknown> = {
+    timestamp: new Date().toISOString(),
+    status: "running",
+    phase: "generating",
+    workflowId: workflow.id,
+    workflowTitle: workflow.title,
+    followUps,
+    openChatPrompt,
+    openCodexChatPrompt: openChatPrompt,
+    pullRequestDraft,
+    engine,
+    prompt,
+    inputValues: resolved.values,
+    prContext: resolved.prContext,
+    issueContext: resolved.issueContext,
+    localChangesContext: resolved.localChangesContext,
+    generatedOutput: undefined,
+    outputFile: undefined
+  };
+  await updateReasoningFile(liveReasoningFile, liveReasoningPayload);
+
+  liveReasoningPayload.phase = engine === "codexCli" ? "codex-cli" : "vscode-lm";
+  await updateReasoningFile(liveReasoningFile, liveReasoningPayload);
+  options.onStatus?.(
+    engine === "codexCli" ? `Generating ${workflow.title} with Codex CLI` : `Generating ${workflow.title} with the selected chat model`
+  );
+
+  const generated = await generateWithConfiguredBackend(prompt, {
+    model: options.model,
+    onStatus: options.onStatus,
+    onEvent: async (event) => {
+      liveReasoningPayload.backendEvent = event;
+      await updateReasoningFile(liveReasoningFile, liveReasoningPayload);
+    }
+  });
+
+  if (!generated) {
+    liveReasoningPayload.phase = "failed";
+    liveReasoningPayload.status = "failed";
+    await updateReasoningFile(liveReasoningFile, liveReasoningPayload);
+    throw new Error(`The review could not be generated for '${workflow.title}'. No output files were saved.`);
+  }
+
+  pullRequestDraft = workflow.id === "create-pr" || workflow.type === "create-pr" ? parsePullRequestDraft(generated.content) : undefined;
+
+  options.onStatus?.(`Saving ${workflow.title} output`);
+  const output = renderOutputWithExecutionInfo(
+    workflow.id === "create-pr" || workflow.type === "create-pr"
+      ? renderPullRequestDraftOutput(generated.content, pullRequestDraft)
+      : generated.content,
+    {
+      agentName: generated.agentName,
+      modelName: generated.modelName
+    }
+  );
+  const outputFile = await writeOutputFile(
+    workflow.id,
+    output,
+    resolved.prContext,
+    resolved.issueContext,
+    resolved.localChangesContext
+  );
+  const reasoningPayload: Record<string, unknown> = {
+    timestamp: new Date().toISOString(),
+    status: "completed",
+    phase: "completed",
+    workflowId: workflow.id,
+    workflowTitle: workflow.title,
+    followUps,
+    openChatPrompt,
+    openCodexChatPrompt: openChatPrompt,
+    pullRequestDraft,
+    engine,
+    agentName: generated.agentName,
+    modelName: generated.modelName,
+    prompt,
+    inputValues: resolved.values,
+    prContext: resolved.prContext,
+    issueContext: resolved.issueContext,
+    localChangesContext: resolved.localChangesContext,
+    generatedOutput: output,
+    outputFile: outputFile.fsPath
+  };
+  await updateReasoningFile(liveReasoningFile, reasoningPayload);
+  const reasoningFile = await writeReasoningFile(outputFile, reasoningPayload);
+  reasoningPayload.reasoningFile = reasoningFile.fsPath;
+  await updateReasoningFile(liveReasoningFile, reasoningPayload);
+  await updateReasoningFile(reasoningFile, reasoningPayload);
+
+  const metadata: ActionOutputMetadata = {
+    workflowId: workflow.id,
+    workflowTitle: workflow.title,
+    followUps,
+    openChatPrompt,
+    openCodexChatPrompt: openChatPrompt,
+    pullRequestDraft,
+    engine,
+    agentName: generated.agentName,
+    modelName: generated.modelName,
+    prompt,
+    inputValues: resolved.values,
+    generatedOutput: output,
+    outputFile: outputFile.fsPath,
+    reasoningFile: reasoningFile.fsPath,
+    prContext: resolved.prContext,
+    issueContext: resolved.issueContext,
+    localChangesContext: resolved.localChangesContext
+  };
+
+  return {
+    metadata,
+    outputFile,
+    reasoningFile,
+    output
   };
 }
 
@@ -433,18 +497,22 @@ export async function submitPrForActiveOutput(): Promise<void> {
   await submitPullRequestFromMetadata(metadata);
 }
 
-export async function openCodexChatForActiveOutput(): Promise<void> {
+export async function openChatForActiveOutput(): Promise<void> {
   const metadata = await getMetadataForActiveOutput();
   if (!metadata) {
     return;
   }
 
-  if (!getActiveOutputFollowUpStateFromMetadata(metadata).canOpenCodexChat) {
-    vscode.window.showWarningMessage("Open in Codex Chat is not available for the active output file.");
+  if (!getActiveOutputFollowUpStateFromMetadata(metadata).canOpenChat) {
+    vscode.window.showWarningMessage("Open in Chat is not available for the active output file.");
     return;
   }
 
-  await openCodexChatFromMetadata(metadata);
+  await openChatFromMetadata(metadata);
+}
+
+export async function openCodexChatForActiveOutput(): Promise<void> {
+  await openChatForActiveOutput();
 }
 
 export async function getActiveOutputFollowUpState(
@@ -459,32 +527,25 @@ export async function getActiveOutputFollowUpState(
   return metadata ? getActiveOutputFollowUpStateFromMetadata(metadata) : EMPTY_ACTIVE_OUTPUT_FOLLOW_UP_STATE;
 }
 
-async function openCodexChatFromMetadata(metadata: ActionOutputMetadata): Promise<void> {
-  const starterPrompt = buildCodexChatStarterPrompt(metadata);
+async function openChatFromMetadata(metadata: ActionOutputMetadata): Promise<void> {
+  const starterPrompt = buildChatStarterPrompt(metadata);
   if (!starterPrompt) {
-    vscode.window.showWarningMessage("No Codex starter prompt is available for this output file.");
+    vscode.window.showWarningMessage("No chat starter prompt is available for this output file.");
     return;
   }
 
-  const launchResult = await openNewCodexChatBestEffort();
-  const codexContextFile = metadata.reasoningFile || metadata.outputFile;
-  const attachedFiles = await attachFilesToCodexThreadBestEffort(codexContextFile ? [codexContextFile] : []);
+  const launchResult = await openNewChatBestEffort();
   await vscode.env.clipboard.writeText(starterPrompt);
 
   const statusParts: string[] = [];
   if (launchResult.createdThread) {
-    statusParts.push("Opened a fresh Codex chat thread.");
+    statusParts.push("Opened a fresh chat thread.");
   } else if (launchResult.focused) {
-    statusParts.push("Focused Codex Chat, but could not create a fresh thread automatically.");
+    statusParts.push("Focused the chat view, but could not create a fresh thread automatically.");
   } else {
-    statusParts.push("Could not open Codex Chat automatically.");
+    statusParts.push("Could not open the chat view automatically.");
   }
-  statusParts.push(
-    attachedFiles.length > 0
-      ? `Attached ${attachedFiles.join(" and ")} to the thread.`
-      : "Could not attach files to the thread automatically."
-  );
-  statusParts.push("Starter prompt copied to clipboard. Paste and send it in Codex Chat.");
+  statusParts.push("Starter prompt copied to clipboard. Use `@cmsisdev`, then paste it in chat. Add the reasoning file first if the prompt asks for it.");
   await vscode.window.showInformationMessage(statusParts.join(" "));
 }
 
@@ -1554,7 +1615,33 @@ async function tryRunGitCommand(repoRoot: string, args: string[]): Promise<strin
   }
 }
 
-async function tryGenerateWithCodexCli(prompt: string, options: CodexCliOptions = {}): Promise<GeneratedReview | undefined> {
+function buildWorkflowPrompt(template: string, values: Record<string, string>, additionalInstructions?: string): string {
+  const prompt = renderPromptTemplate(template, values);
+  const extra = additionalInstructions?.trim();
+  if (!extra) {
+    return prompt;
+  }
+
+  return [prompt.trimEnd(), "", "Additional user instructions:", extra].join("\n");
+}
+
+function resolveWorkflowEngine(model: vscode.LanguageModelChat | undefined): ReviewEngine {
+  if (model) {
+    return "vscodeLm";
+  }
+
+  return getConfiguredAiBackend();
+}
+
+async function generateWithConfiguredBackend(
+  prompt: string,
+  options: GenerationOptions = {}
+): Promise<GeneratedReview | undefined> {
+  const engine = resolveWorkflowEngine(options.model);
+  return engine === "codexCli" ? tryGenerateWithCodexCli(prompt, options) : tryGenerateWithVsCodeLm(prompt, options);
+}
+
+async function tryGenerateWithCodexCli(prompt: string, options: GenerationOptions = {}): Promise<GeneratedReview | undefined> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   const cwd = workspaceFolder?.uri.fsPath ?? process.cwd();
   const cliExecutable =
@@ -1672,6 +1759,62 @@ async function tryGenerateWithCodexCli(prompt: string, options: CodexCliOptions 
     child.stdin.write(prompt);
     child.stdin.end();
   });
+}
+
+async function tryGenerateWithVsCodeLm(prompt: string, options: GenerationOptions = {}): Promise<GeneratedReview | undefined> {
+  const model = options.model ?? (await resolveConfiguredLanguageModel());
+  if (!model) {
+    throw new Error(
+      "No VS Code chat model is available for CMSIS-Dev. Configure a provider in the Language Models view or select one in CMSIS-Dev settings."
+    );
+  }
+
+  const modelLabel = formatLanguageModelLabel(model);
+  options.onStatus?.(`Requesting ${modelLabel}`);
+
+  try {
+    const response = await model.sendRequest(
+      [vscode.LanguageModelChatMessage.User(prompt)],
+      {
+        justification: "CMSIS-Dev needs a language model to run repository workflows such as reviews, issue explanations, and PR drafts."
+      }
+    );
+
+    let content = "";
+    for await (const part of response.stream) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        content += part.value;
+      }
+    }
+
+    const normalized = content.trim();
+    return normalized
+      ? {
+          agentName: "VS Code Chat",
+          modelName: modelLabel,
+          content: normalized
+        }
+      : undefined;
+  } catch (error) {
+    throw new Error(describeLanguageModelError(error));
+  }
+}
+
+function describeLanguageModelError(error: unknown): string {
+  if (error instanceof vscode.LanguageModelError) {
+    switch (error.code) {
+      case "NoPermissions":
+        return "VS Code denied CMSIS-Dev access to the selected language model. Run the action again and accept the permission prompt.";
+      case "NotFound":
+        return "The configured VS Code language model is no longer available. Choose another model in CMSIS-Dev settings.";
+      case "Blocked":
+        return "The selected VS Code language model is currently blocked or out of quota.";
+      default:
+        return error.message;
+    }
+  }
+
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function writeOutputFile(
@@ -1813,8 +1956,14 @@ function resolveWorkflowFollowUps(workflow: Pick<WorkflowDefinition, "id" | "typ
 }
 
 function normalizeFollowUps(followUps: readonly WorkflowFollowUp[] | undefined): WorkflowFollowUp[] {
-  const allowed = new Set<WorkflowFollowUp>(["openReasoning", "openPr", "openIssue", "postComment", "submitPr", "openCodexChat"]);
-  return Array.from(new Set((followUps ?? []).filter((followUp) => allowed.has(followUp))));
+  const allowed = new Set<WorkflowFollowUp>(["openReasoning", "openPr", "openIssue", "postComment", "submitPr", "openChat", "openCodexChat"]);
+  return Array.from(
+    new Set(
+      (followUps ?? [])
+        .filter((followUp) => allowed.has(followUp))
+        .map((followUp) => (followUp === "openCodexChat" ? "openChat" : followUp))
+    )
+  ) as WorkflowFollowUp[];
 }
 
 function resolveMetadataFollowUps(
@@ -1846,6 +1995,10 @@ function resolveMetadataFollowUps(
 
 function getActiveOutputFollowUpStateFromMetadata(metadata: ActionOutputMetadata): ActiveOutputFollowUpState {
   const followUps = resolveMetadataFollowUps(metadata);
+  const canOpenChat =
+    followUps.includes("openChat") &&
+    Boolean(metadata.reasoningFile || metadata.outputFile) &&
+    Boolean(buildChatStarterPrompt(metadata));
   return {
     canOpenReasoning: followUps.includes("openReasoning") && Boolean(metadata.reasoningFile),
     canOpenPr: followUps.includes("openPr") && Boolean(metadata.prContext?.pr.htmlUrl),
@@ -1857,17 +2010,15 @@ function getActiveOutputFollowUpStateFromMetadata(metadata: ActionOutputMetadata
       Boolean(metadata.localChangesContext?.rootPath) &&
       Boolean(metadata.localChangesContext?.owner) &&
       Boolean(metadata.localChangesContext?.repo),
-    canOpenCodexChat:
-      followUps.includes("openCodexChat") &&
-      Boolean(metadata.reasoningFile || metadata.outputFile) &&
-      Boolean(buildCodexChatStarterPrompt(metadata))
+    canOpenChat,
+    canOpenCodexChat: canOpenChat
   };
 }
 
-function buildCodexChatStarterPrompt(metadata: ActionOutputMetadata): string | undefined {
-  const configuredPrompt = metadata.openCodexChatPrompt?.trim();
+function buildChatStarterPrompt(metadata: ActionOutputMetadata): string | undefined {
+  const configuredPrompt = metadata.openChatPrompt?.trim() || metadata.openCodexChatPrompt?.trim();
   if (configuredPrompt) {
-    return appendWorkspaceRepoContext(configuredPrompt, metadata);
+    return appendWorkflowFileContext(appendWorkspaceRepoContext(configuredPrompt, metadata), metadata);
   }
 
   if (
@@ -1876,27 +2027,35 @@ function buildCodexChatStarterPrompt(metadata: ActionOutputMetadata): string | u
     metadata.prContext ||
     (metadata.localChangesContext && !metadata.pullRequestDraft)
   ) {
-    return appendWorkspaceRepoContext(
+    return appendWorkflowFileContext(
+      appendWorkspaceRepoContext(
       [
-      "Use the attached CMSIS-Dev reasoning file as the source of truth.",
-      "It contains the generated review plus the workflow context that produced it.",
-      "Identify the concrete review suggestions worth implementing in this workspace.",
-      "Start with a short plan, then implement the accepted changes.",
-      "If any finding is unclear, unsupported, or too risky, explain that before editing."
+        "Use the CMSIS-Dev reasoning file as the source of truth.",
+        "If it is not already attached in chat, add it before you send this prompt.",
+        "It contains the generated review plus the workflow context that produced it.",
+        "Identify the concrete review suggestions worth implementing in this workspace.",
+        "Start with a short plan, then implement the accepted changes.",
+        "If any finding is unclear, unsupported, or too risky, explain that before editing."
       ].join("\n"),
+      metadata
+      ),
       metadata
     );
   }
 
   if (metadata.workflowId === "explain-issue" || metadata.issueContext) {
-    return appendWorkspaceRepoContext(
+    return appendWorkflowFileContext(
+      appendWorkspaceRepoContext(
       [
-      "Use the attached CMSIS-Dev reasoning file as context.",
-      "It contains the generated issue explanation plus the workflow context that produced it.",
-      "Ask the smallest set of concrete follow-up questions needed to resolve the open questions or missing information.",
-      "Group related questions together and avoid repeating facts already established in the attached explanation.",
-      "If some missing information can be inferred from the local repo, investigate that first before asking."
+        "Use the CMSIS-Dev reasoning file as context.",
+        "If it is not already attached in chat, add it before you send this prompt.",
+        "It contains the generated issue explanation plus the workflow context that produced it.",
+        "Ask the smallest set of concrete follow-up questions needed to resolve the open questions or missing information.",
+        "Group related questions together and avoid repeating facts already established in the reasoning file.",
+        "If some missing information can be inferred from the local repo, investigate that first before asking."
       ].join("\n"),
+      metadata
+      ),
       metadata
     );
   }
@@ -1962,25 +2121,44 @@ function appendWorkspaceRepoContext(prompt: string, metadata: ActionOutputMetada
     lines.push(`- Workspace folder: ${workspaceFolderName}`);
   }
   lines.push(`- Repo root: ${repoRoot}`);
-  lines.push("- Paths mentioned in the attached reasoning are relative to this repo root.");
+  lines.push("- Paths mentioned in the CMSIS-Dev reasoning file are relative to this repo root.");
   return lines.join("\n");
 }
-async function openNewCodexChatBestEffort(): Promise<CodexChatLaunchResult> {
+
+function appendWorkflowFileContext(prompt: string, metadata: ActionOutputMetadata): string {
+  const reasoningFile = metadata.reasoningFile?.trim();
+  const outputFile = metadata.outputFile?.trim();
+  if (!reasoningFile && !outputFile) {
+    return prompt;
+  }
+
+  const lines = [prompt.trimEnd(), "", "Relevant CMSIS-Dev files:"];
+  if (reasoningFile) {
+    lines.push(`- Reasoning file: ${reasoningFile}`);
+  }
+  if (outputFile) {
+    lines.push(`- Output file: ${outputFile}`);
+  }
+
+  return lines.join("\n");
+}
+
+async function openNewChatBestEffort(): Promise<ChatLaunchResult> {
   const availableCommands = new Set(await vscode.commands.getCommands(true));
-  const result: CodexChatLaunchResult = {
+  const result: ChatLaunchResult = {
     focused: false,
     createdThread: false,
     commands: []
   };
 
-  const createdImmediately = await tryExecuteFirstAvailableCommand(CODEX_NEW_THREAD_COMMANDS, availableCommands, result, 250);
+  const createdImmediately = await tryExecuteFirstAvailableCommand(CHAT_NEW_THREAD_COMMANDS, availableCommands, result, 250);
   if (!createdImmediately) {
-    await tryExecuteFirstAvailableCommand(CODEX_FOCUS_COMMANDS, availableCommands, result, 150);
-    await tryExecuteFirstAvailableCommand(CODEX_NEW_THREAD_COMMANDS, availableCommands, result, 250);
+    await tryExecuteFirstAvailableCommand(CHAT_FOCUS_COMMANDS, availableCommands, result, 150);
+    await tryExecuteFirstAvailableCommand(CHAT_NEW_THREAD_COMMANDS, availableCommands, result, 250);
   }
 
   if (result.createdThread && !result.focused) {
-    await tryExecuteFirstAvailableCommand(CODEX_FOCUS_COMMANDS, availableCommands, result, 150);
+    await tryExecuteFirstAvailableCommand(CHAT_FOCUS_COMMANDS, availableCommands, result, 150);
   }
 
   return result;
@@ -1989,7 +2167,7 @@ async function openNewCodexChatBestEffort(): Promise<CodexChatLaunchResult> {
 async function tryExecuteFirstAvailableCommand(
   commands: readonly string[],
   availableCommands: ReadonlySet<string>,
-  result: CodexChatLaunchResult,
+  result: ChatLaunchResult,
   waitMs: number
 ): Promise<boolean> {
   for (const command of commands) {
@@ -2000,10 +2178,10 @@ async function tryExecuteFirstAvailableCommand(
     try {
       await vscode.commands.executeCommand(command);
       result.commands.push(command);
-      if (CODEX_FOCUS_COMMANDS.includes(command)) {
+      if (CHAT_FOCUS_COMMANDS.includes(command)) {
         result.focused = true;
       }
-      if (CODEX_NEW_THREAD_COMMANDS.includes(command)) {
+      if (CHAT_NEW_THREAD_COMMANDS.includes(command)) {
         result.createdThread = true;
       }
       await delay(waitMs);
@@ -2014,45 +2192,6 @@ async function tryExecuteFirstAvailableCommand(
   }
 
   return false;
-}
-
-async function attachFilesToCodexThreadBestEffort(filePaths: string[]): Promise<string[]> {
-  const availableCommands = new Set(await vscode.commands.getCommands(true));
-  if (!availableCommands.has(CODEX_ADD_FILE_COMMAND)) {
-    return [];
-  }
-
-  const originalEditor = vscode.window.activeTextEditor;
-  const attached: string[] = [];
-
-  try {
-    for (const filePath of Array.from(new Set(filePaths)).filter(Boolean)) {
-      const attachedLabel = await attachSingleFileToCodexThread(filePath);
-      if (attachedLabel) {
-        attached.push(attachedLabel);
-      }
-    }
-  } finally {
-    if (originalEditor) {
-      await vscode.window.showTextDocument(originalEditor.document, {
-        preview: false,
-        preserveFocus: true,
-        viewColumn: originalEditor.viewColumn
-      });
-    }
-  }
-
-  return attached;
-}
-
-async function attachSingleFileToCodexThread(filePath: string): Promise<string | undefined> {
-  try {
-    await vscode.commands.executeCommand(CODEX_ADD_FILE_COMMAND, vscode.Uri.file(filePath));
-    await delay(100);
-    return path.basename(filePath);
-  } catch {
-    return undefined;
-  }
 }
 
 async function delay(ms: number): Promise<void> {
@@ -2312,13 +2451,13 @@ function renderReasoningMarkdown(payload: Record<string, unknown>): string {
     lines.push("```");
   }
 
-  const codexCliEvent = payload.codexCliEvent;
-  if (codexCliEvent !== undefined) {
+  const backendEvent = payload.backendEvent ?? payload.codexCliEvent;
+  if (backendEvent !== undefined) {
     lines.push("");
-    lines.push("## Latest Codex CLI Event");
+    lines.push("## Latest Backend Event");
     lines.push("");
     lines.push("```json");
-    lines.push(JSON.stringify(codexCliEvent, null, 2));
+    lines.push(JSON.stringify(backendEvent, null, 2));
     lines.push("```");
   }
 

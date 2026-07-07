@@ -6,7 +6,14 @@ export interface WorkflowInputDefinition {
   required?: boolean;
 }
 
-export type WorkflowFollowUp = "openReasoning" | "openPr" | "openIssue" | "postComment" | "submitPr" | "openCodexChat";
+export type WorkflowFollowUp =
+  | "openReasoning"
+  | "openPr"
+  | "openIssue"
+  | "postComment"
+  | "submitPr"
+  | "openChat"
+  | "openCodexChat";
 
 export interface WorkflowDefinition {
   id: string;
@@ -15,6 +22,7 @@ export interface WorkflowDefinition {
   type: "review-pr" | string;
   inputs: WorkflowInputDefinition[];
   promptTemplate?: string;
+  openChatPromptTemplate?: string;
   openCodexChatPromptTemplate?: string;
   followUps?: WorkflowFollowUp[];
 }

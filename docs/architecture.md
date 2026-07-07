@@ -17,7 +17,7 @@ CMSIS-Dev has three runtime layers:
 
 1. The VS Code extension owns UI, workflow discovery, input collection, prompt construction, AI execution, output persistence, and follow-up actions.
 2. The MCP server exposes the same workflow catalog as MCP tools, resolving supported inputs and returning rendered prompts.
-3. The AI backend layer is currently Codex-focused: the extension executes actions through Codex CLI using the configured model and reasoning effort.
+3. The AI backend layer is adapter-based: the extension can execute actions through VS Code language models or through Codex CLI.
 
 ```mermaid
 flowchart LR
@@ -25,11 +25,11 @@ flowchart LR
     Views["Views\nActions / Workflows / Runs"]
     Registry["Workflow Registry\nbundled + workspace override"]
     Pipeline["Prompt Workflow Pipeline"]
-    FollowUps["Follow-up Actions\npost comment / submit PR / open Codex chat"]
+    FollowUps["Follow-up Actions\npost comment / submit PR / open chat"]
   end
 
   subgraph AI["AI Backend Layer"]
-    Codex["Codex CLI"]
+    Models["VS Code LM / Codex CLI"]
   end
 
   subgraph External["External Systems"]
@@ -43,7 +43,7 @@ flowchart LR
 
   Views --> Registry
   Registry --> Pipeline
-  Pipeline --> Codex
+  Pipeline --> Models
   Pipeline --> GitHub
   Pipeline --> Git
   Pipeline --> FollowUps
@@ -75,7 +75,7 @@ The extension entrypoint is `src/extension.ts`. It wires together four responsib
 The UI surface is intentionally thin:
 
 - `ActionsProvider` shows runnable workflows loaded from the registry.
-- The `Actions` view title exposes Codex model and reasoning controls and shows the effective selection as view description text.
+- The `Actions` view title exposes AI backend and model controls and shows the effective selection as view description text.
 - `WorkflowsProvider` shows the effective workflow files, labeled as `installed` or `workspace`.
 - `RunsProvider` shows generated outputs from the runs directory and supports multi-select deletion.
 
@@ -105,13 +105,12 @@ The AI backend is an adapter boundary inside `src/workflows/promptWorkflow.ts`.
 
 Current execution logic:
 
-- `tryGenerateWithCodexCli()` runs `codex exec`.
-- Codex model and reasoning effort are configured independently of workflow YAML.
-- The `Actions` view exposes those controls without changing workflow definitions.
+- `generateWithConfiguredBackend()` selects either VS Code language models or Codex CLI.
+- `tryGenerateWithVsCodeLm()` uses `vscode.lm` and can also be driven from the `@cmsisdev` chat participant.
+- `src/languageModelProvider.ts` contributes a CMSIS-Dev language model provider backed by an OpenAI-compatible proxy.
+- Codex-specific model and reasoning overrides remain available only when the backend is `codexCli`.
 
-This isolates model execution from workflow definition. A workflow does not know which concrete Codex model has been selected for the run.
-
-That is the main model-plugging extension point in the MVP: add another backend adapter that accepts a prompt and returns generated text plus model metadata, then insert it into the same execution pipeline.
+This keeps model execution separate from workflow definition. A workflow does not know which concrete provider or model has been selected for the run.
 
 ## Workflow Registry
 
@@ -163,7 +162,7 @@ export interface WorkflowDefinition {
   type: string;
   inputs: WorkflowInputDefinition[];
   promptTemplate?: string;
-  openCodexChatPromptTemplate?: string;
+  openChatPromptTemplate?: string;
   followUps?: WorkflowFollowUp[];
 }
 ```
@@ -182,7 +181,7 @@ Supported follow-ups:
 - `openIssue`
 - `postComment`
 - `submitPr`
-- `openCodexChat`
+- `openChat`
 
 The YAML schema is enforced in `src/workflowDiagnostics.ts`, which validates open workflow documents and surfaces errors as VS Code diagnostics.
 
@@ -247,7 +246,7 @@ sequenceDiagram
   A-->>V: Output + model metadata
   V->>F: Write output.md, reasoning.md, meta.json
   V->>G: Enable follow-up actions
-  G-->>U: Open PR / post comment / submit PR / open Codex chat
+  G-->>U: Open PR / post comment / submit PR / open chat
 ```
 
 ### Step-by-step

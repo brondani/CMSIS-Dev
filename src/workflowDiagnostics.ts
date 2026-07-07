@@ -6,7 +6,7 @@ import { z } from "zod";
 import { resolveWorkflowConfigUri } from "./workflowConfig";
 
 const workflowInputTypeSchema = z.enum(["text", "github-pr-context", "github-issue-context", "git-local-changes-context"]);
-const workflowFollowUpSchema = z.enum(["openReasoning", "openPr", "openIssue", "postComment", "submitPr", "openCodexChat"]);
+const workflowFollowUpSchema = z.enum(["openReasoning", "openPr", "openIssue", "postComment", "submitPr", "openChat", "openCodexChat"]);
 
 const workflowInputSchema = z
   .object({
@@ -26,6 +26,7 @@ const workflowSchema = z
     type: z.string().min(1, "Workflow type is required."),
     inputs: z.array(workflowInputSchema).min(1, "At least one input is required."),
     promptTemplate: z.string().optional(),
+    openChatPromptTemplate: z.string().optional(),
     openCodexChatPromptTemplate: z.string().optional(),
     followUps: z.array(workflowFollowUpSchema).optional()
   })

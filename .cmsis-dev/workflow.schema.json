@@ -67,6 +67,9 @@
         "promptTemplate": {
           "type": "string"
         },
+        "openChatPromptTemplate": {
+          "type": "string"
+        },
         "openCodexChatPromptTemplate": {
           "type": "string"
         },
@@ -81,6 +84,7 @@
               "openIssue",
               "postComment",
               "submitPr",
+              "openChat",
               "openCodexChat"
             ]
           }

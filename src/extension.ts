@@ -4,14 +4,20 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { ActionsProvider } from "./actionsProvider";
 import {
-  CodexReasoningEffort,
-  describeCodexSettings,
-  getConfiguredCodexModel,
-  getConfiguredCodexReasoningEffort,
+  describeAiSettings,
+  formatLanguageModelLabel,
+  getConfiguredAiBackend,
+  getConfiguredLanguageModelSelector,
   getPreferredSettingsTarget,
-  listCodexModelCandidates,
-  listCodexReasoningEffortCandidates
-} from "./codexSettings";
+  listAvailableLanguageModels,
+  updateConfiguredLanguageModelSelector
+} from "./aiSettings";
+import { registerCmsisDevChatParticipant } from "./chatParticipant";
+import {
+  manageCmsisDevLanguageModelProvider,
+  refreshCmsisDevLanguageModelProvider,
+  registerCmsisDevLanguageModelProvider
+} from "./languageModelProvider";
 import { getRelatedRunFilePaths, RunOutputItem, RunsProvider } from "./runsProvider";
 import { clearGitHubToken, initializeSecretStorage, setGitHubToken } from "./secrets";
 import { WorkflowDefinition } from "./types";
@@ -26,6 +32,7 @@ import {
 } from "./workflowConfig";
 import {
   getActiveOutputFollowUpState,
+  openChatForActiveOutput,
   openCodexChatForActiveOutput,
   openIssueForActiveOutput,
   openPrForActiveOutput,
@@ -40,6 +47,7 @@ let mcpProcess: cp.ChildProcess | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   initializeSecretStorage(context.secrets);
+  const languageModelProvider = registerCmsisDevLanguageModelProvider(context);
   const provider = new ActionsProvider();
   const actionsTreeView = vscode.window.createTreeView("cmsisDev.actions", {
     treeDataProvider: provider
@@ -89,13 +97,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void updateActiveOutputContexts(editor);
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("cmsisDev.codexModel") || event.affectsConfiguration("cmsisDev.codexReasoningEffort")) {
+      if (
+        event.affectsConfiguration("cmsisDev.aiBackend") ||
+        event.affectsConfiguration("cmsisDev.languageModelSelector") ||
+        event.affectsConfiguration("cmsisDev.languageModelProvider.baseUrl") ||
+        event.affectsConfiguration("cmsisDev.codexModel") ||
+        event.affectsConfiguration("cmsisDev.codexReasoningEffort")
+      ) {
         void updateActionsViewDescription(actionsTreeView);
       }
     }),
     actionsTreeView,
     vscode.window.registerTreeDataProvider("cmsisDev.workflows", workflowsProvider),
     runsTreeView,
+    registerCmsisDevChatParticipant(context),
     vscode.commands.registerCommand("cmsisDev.initializeWorkflows", async () => {
       await initializeWorkflowConfig();
       await provider.refresh();
@@ -180,11 +195,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("cmsisDev.refreshWorkflows", async () => {
       await workflowsProvider.refresh();
     }),
-    vscode.commands.registerCommand("cmsisDev.selectCodexModel", async () => {
-      await selectCodexModel(actionsTreeView);
+    vscode.commands.registerCommand("cmsisDev.selectAiBackend", async () => {
+      await selectAiBackend(actionsTreeView);
     }),
-    vscode.commands.registerCommand("cmsisDev.selectCodexReasoningEffort", async () => {
-      await selectCodexReasoningEffort(actionsTreeView);
+    vscode.commands.registerCommand("cmsisDev.selectLanguageModel", async () => {
+      await selectLanguageModel(actionsTreeView);
+    }),
+    vscode.commands.registerCommand("cmsisDev.manageLanguageModelProvider", async () => {
+      await manageCmsisDevLanguageModelProvider(languageModelProvider);
+      await updateActionsViewDescription(actionsTreeView);
+    }),
+    vscode.commands.registerCommand("cmsisDev.refreshLanguageModelProvider", async () => {
+      await refreshCmsisDevLanguageModelProvider(languageModelProvider);
+      await updateActionsViewDescription(actionsTreeView);
     }),
     vscode.commands.registerCommand("cmsisDev.setGitHubToken", async () => {
       const token = await vscode.window.showInputBox({
@@ -217,6 +240,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand("cmsisDev.openIssueForActiveOutput", async () => {
       await openIssueForActiveOutput();
+    }),
+    vscode.commands.registerCommand("cmsisDev.openChatForActiveOutput", async () => {
+      await openChatForActiveOutput();
     }),
     vscode.commands.registerCommand("cmsisDev.openCodexChatForActiveOutput", async () => {
       await openCodexChatForActiveOutput();
@@ -323,10 +349,10 @@ async function runWorkflowWithStatus(workflow: WorkflowDefinition): Promise<void
       statusBar.text = `$(circle-slash) CMSIS-Dev: Cancelled ${workflow.title}`;
       dismissAfterMs = 2500;
     } else {
-      statusBar.text = result.handedOffToCodexChat
-        ? `$(comment-discussion) CMSIS-Dev: Waiting in Codex Chat for ${workflow.title}`
+      statusBar.text = result.handedOffToChat
+        ? `$(comment-discussion) CMSIS-Dev: Waiting in Chat for ${workflow.title}`
         : `$(check) CMSIS-Dev: Completed ${workflow.title}`;
-      dismissAfterMs = result.handedOffToCodexChat ? 30000 : 8000;
+      dismissAfterMs = result.handedOffToChat ? 30000 : 8000;
     }
   } catch (error) {
     statusBar.text = `$(error) CMSIS-Dev: Failed ${workflow.title}`;
@@ -343,130 +369,83 @@ async function runWorkflowWithStatus(workflow: WorkflowDefinition): Promise<void
 }
 
 async function updateActionsViewDescription(actionsTreeView: vscode.TreeView<unknown>): Promise<void> {
-  actionsTreeView.description = await describeCodexSettings();
+  actionsTreeView.description = await describeAiSettings();
 }
 
-async function selectCodexModel(actionsTreeView: vscode.TreeView<unknown>): Promise<void> {
-  const configuredModel = getConfiguredCodexModel();
-  const candidates = await listCodexModelCandidates();
-  const quickPickItems: Array<vscode.QuickPickItem & { model?: string; custom?: boolean }> = [
-    ...candidates.map((model) => ({
-      label: model,
-      description: model === configuredModel ? "Current selection" : undefined,
-      model
-    })),
+async function selectAiBackend(actionsTreeView: vscode.TreeView<unknown>): Promise<void> {
+  const configuredBackend = getConfiguredAiBackend();
+  const selected = await vscode.window.showQuickPick(
+    [
+      {
+        label: "VS Code Language Model",
+        description: configuredBackend === "vscodeLm" ? "Current selection" : undefined,
+        detail: "Run CMSIS-Dev actions through the VS Code model/provider system and built-in chat.",
+        value: "vscodeLm"
+      },
+      {
+        label: "Codex CLI",
+        description: configuredBackend === "codexCli" ? "Current selection" : undefined,
+        detail: "Keep using local `codex exec` for workflow generation.",
+        value: "codexCli"
+      }
+    ],
     {
-      label: "Custom...",
-      description: configuredModel && !candidates.includes(configuredModel) ? configuredModel : undefined,
-      detail: "Enter a model id manually.",
-      custom: true
+      title: "Select AI Backend",
+      placeHolder: "Choose how CMSIS-Dev runs AI actions"
     }
-  ];
-
-  const selected = await vscode.window.showQuickPick(quickPickItems, {
-    title: "Select Codex Model",
-    placeHolder: "Choose the Codex model for CMSIS-Dev actions"
-  });
+  );
   if (!selected) {
     return;
   }
 
-  let nextValue: string | undefined;
-  if (selected.custom) {
-    const entered = await vscode.window.showInputBox({
-      title: "Codex Model",
-      prompt: "Enter the Codex model id to use for CMSIS-Dev actions",
-      value: configuredModel ?? "",
-      ignoreFocusOut: true,
-      validateInput: (value) => (value.trim().length > 0 ? null : "Model id cannot be empty")
-    });
-    if (!entered) {
-      return;
-    }
-
-    nextValue = entered.trim();
-  } else {
-    nextValue = selected.model;
-  }
-
-  await vscode.workspace
-    .getConfiguration("cmsisDev")
-    .update("codexModel", nextValue ?? undefined, getPreferredSettingsTarget());
+  await vscode.workspace.getConfiguration("cmsisDev").update("aiBackend", selected.value, getPreferredSettingsTarget());
   await updateActionsViewDescription(actionsTreeView);
 }
 
-async function selectCodexReasoningEffort(actionsTreeView: vscode.TreeView<unknown>): Promise<void> {
-  const configuredReasoning = getConfiguredCodexReasoningEffort();
-  const candidates = await listCodexReasoningEffortCandidates();
-  const quickPickItems: Array<vscode.QuickPickItem & { value?: CodexReasoningEffort; custom?: boolean }> = [
-    ...candidates.map((value) => ({
-      label: formatReasoningEffortLabel(value),
-      description: value === configuredReasoning ? "Current selection" : undefined,
-      detail: describeReasoningEffort(value),
-      value
-    })),
+async function selectLanguageModel(actionsTreeView: vscode.TreeView<unknown>): Promise<void> {
+  const configuredSelector = getConfiguredLanguageModelSelector();
+  const availableModels = await listAvailableLanguageModels();
+  const selected = await vscode.window.showQuickPick(
+    [
+      {
+        label: "Automatic",
+        description: !configuredSelector ? "Current selection" : undefined,
+        detail: "Use the first available VS Code chat model.",
+        selector: undefined
+      },
+      ...availableModels.map((model) => ({
+        label: model.name,
+        description:
+          configuredSelector &&
+          configuredSelector.vendor === model.vendor &&
+          configuredSelector.family === model.family &&
+          configuredSelector.version === model.version &&
+          configuredSelector.id === model.id
+            ? "Current selection"
+            : undefined,
+        detail: formatLanguageModelLabel(model),
+        selector: {
+          vendor: model.vendor,
+          family: model.family,
+          version: model.version,
+          id: model.id
+        }
+      }))
+    ],
     {
-      label: "Custom...",
-      detail: "Enter a reasoning effort manually.",
-      custom: true
+      title: "Select VS Code Language Model",
+      placeHolder:
+        availableModels.length > 0
+          ? "Choose the chat model for CMSIS-Dev actions"
+          : "No VS Code chat models are currently available"
     }
-  ];
-
-  const selected = await vscode.window.showQuickPick(quickPickItems, {
-    title: "Select Codex Reasoning Effort",
-    placeHolder: "Choose the reasoning effort for CMSIS-Dev actions"
-  });
+  );
   if (!selected) {
     return;
   }
 
-  let nextValue: string | undefined;
-  if (selected.custom) {
-    const entered = await vscode.window.showInputBox({
-      title: "Codex Reasoning Effort",
-      prompt: "Enter the reasoning effort to use for CMSIS-Dev actions",
-      value: configuredReasoning ?? "",
-      ignoreFocusOut: true,
-      validateInput: (value) => (value.trim().length > 0 ? null : "Reasoning effort cannot be empty")
-    });
-    if (!entered) {
-      return;
-    }
-
-    nextValue = entered.trim();
-  } else {
-    nextValue = selected.value;
-  }
-
-  await vscode.workspace
-    .getConfiguration("cmsisDev")
-    .update("codexReasoningEffort", nextValue ?? undefined, getPreferredSettingsTarget());
+  await updateConfiguredLanguageModelSelector(selected.selector);
   await updateActionsViewDescription(actionsTreeView);
-}
-
-function formatReasoningEffortLabel(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "low" || normalized === "medium" || normalized === "high") {
-    return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`;
-  }
-
-  return value;
-}
-
-function describeReasoningEffort(value: string): string | undefined {
-  const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "low":
-      return "Efficient reasoning with a modest latency increase.";
-    case "medium":
-      return "When quality and reliability matter, and the task involves planning, complex reasoning, and judgement.";
-    case "high":
-      return "Hard reasoning, complex debugging, deep planning, and high-value tasks where quality and intelligence matters more than latency.";
-    case "xhigh":
-      return "Deep research, asynchronous workflows and agentic tasks that require very long rollouts. ";
-    default:
-      return undefined;
-  }
 }
 
 async function startMcpServer(context: vscode.ExtensionContext): Promise<void> {
@@ -544,6 +523,7 @@ async function updateActiveOutputContexts(editor: vscode.TextEditor | undefined)
     vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canOpenIssue", followUpState.canOpenIssue),
     vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canPostComment", followUpState.canPostComment),
     vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canSubmitPr", followUpState.canSubmitPr),
+    vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canOpenChat", followUpState.canOpenChat),
     vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canOpenCodexChat", followUpState.canOpenCodexChat)
   ]);
 }

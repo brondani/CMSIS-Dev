@@ -5,7 +5,7 @@
   "version": "0.0.1",
   "publisher": "cmsis-dev",
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.125.0"
   },
   "categories": [
     "Other"
@@ -20,15 +20,17 @@
     "onCommand:cmsisDev.refreshWorkflows",
     "onCommand:cmsisDev.refreshRuns",
     "onCommand:cmsisDev.deleteRuns",
-    "onCommand:cmsisDev.selectCodexModel",
-    "onCommand:cmsisDev.selectCodexReasoningEffort",
+    "onCommand:cmsisDev.selectAiBackend",
+    "onCommand:cmsisDev.selectLanguageModel",
+    "onCommand:cmsisDev.manageLanguageModelProvider",
+    "onCommand:cmsisDev.refreshLanguageModelProvider",
     "onCommand:cmsisDev.setGitHubToken",
     "onCommand:cmsisDev.clearGitHubToken",
     "onCommand:cmsisDev.openReasoningForActiveOutput",
     "onCommand:cmsisDev.postCommentForActiveOutput",
     "onCommand:cmsisDev.openPrForActiveOutput",
     "onCommand:cmsisDev.openIssueForActiveOutput",
-    "onCommand:cmsisDev.openCodexChatForActiveOutput",
+    "onCommand:cmsisDev.openChatForActiveOutput",
     "onCommand:cmsisDev.submitPrForActiveOutput"
   ],
   "main": "./out/extension.js",
@@ -52,14 +54,24 @@
         "title": "CMSIS-Dev: Create Workflow Overrides"
       },
       {
-        "command": "cmsisDev.selectCodexModel",
-        "title": "CMSIS-Dev: Set Codex Model",
+        "command": "cmsisDev.selectAiBackend",
+        "title": "CMSIS-Dev: Set AI Backend",
         "icon": "$(hubot)"
       },
       {
-        "command": "cmsisDev.selectCodexReasoningEffort",
-        "title": "CMSIS-Dev: Set Codex Reasoning",
+        "command": "cmsisDev.selectLanguageModel",
+        "title": "CMSIS-Dev: Set VS Code Model",
         "icon": "$(pulse)"
+      },
+      {
+        "command": "cmsisDev.manageLanguageModelProvider",
+        "title": "CMSIS-Dev: Manage Language Model Provider",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "cmsisDev.refreshLanguageModelProvider",
+        "title": "CMSIS-Dev: Refresh Language Model Provider",
+        "icon": "$(refresh)"
       },
       {
         "command": "cmsisDev.refreshRuns",
@@ -105,8 +117,8 @@
         "icon": "$(link-external)"
       },
       {
-        "command": "cmsisDev.openCodexChatForActiveOutput",
-        "title": "CMSIS-Dev: Open in Codex Chat",
+        "command": "cmsisDev.openChatForActiveOutput",
+        "title": "CMSIS-Dev: Open in Chat",
         "icon": "$(send)"
       },
       {
@@ -135,12 +147,17 @@
     "menus": {
       "view/title": [
         {
-          "command": "cmsisDev.selectCodexModel",
+          "command": "cmsisDev.selectAiBackend",
           "when": "view == cmsisDev.actions",
           "group": "navigation"
         },
         {
-          "command": "cmsisDev.selectCodexReasoningEffort",
+          "command": "cmsisDev.selectLanguageModel",
+          "when": "view == cmsisDev.actions",
+          "group": "navigation"
+        },
+        {
+          "command": "cmsisDev.manageLanguageModelProvider",
           "when": "view == cmsisDev.actions",
           "group": "navigation"
         },
@@ -194,8 +211,8 @@
           "group": "navigation@11"
         },
         {
-          "command": "cmsisDev.openCodexChatForActiveOutput",
-          "when": "cmsisDev.activeOutput.canOpenCodexChat",
+          "command": "cmsisDev.openChatForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenChat",
           "group": "navigation@12"
         },
         {
@@ -226,8 +243,8 @@
           "group": "2_cmsisDev@4"
         },
         {
-          "command": "cmsisDev.openCodexChatForActiveOutput",
-          "when": "cmsisDev.activeOutput.canOpenCodexChat",
+          "command": "cmsisDev.openChatForActiveOutput",
+          "when": "cmsisDev.activeOutput.canOpenChat",
           "group": "2_cmsisDev@5"
         },
         {
@@ -237,6 +254,44 @@
         }
       ]
     },
+    "chatParticipants": [
+      {
+        "id": "cmsis-dev.chat",
+        "name": "cmsisdev",
+        "fullName": "CMSIS-Dev",
+        "description": "Run CMSIS-Dev workflows inside VS Code Chat.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "run",
+            "description": "Choose and run any CMSIS-Dev workflow."
+          },
+          {
+            "name": "review-pr",
+            "description": "Review a pull request."
+          },
+          {
+            "name": "review-changes",
+            "description": "Review local workspace changes."
+          },
+          {
+            "name": "create-pr",
+            "description": "Draft a pull request from local changes."
+          },
+          {
+            "name": "explain-issue",
+            "description": "Explain a GitHub issue."
+          }
+        ]
+      }
+    ],
+    "languageModelChatProviders": [
+      {
+        "vendor": "cmsis-dev-openai-proxy",
+        "displayName": "CMSIS-Dev Proxy Models",
+        "managementCommand": "cmsisDev.manageLanguageModelProvider"
+      }
+    ],
     "configuration": {
       "title": "CMSIS-Dev",
       "properties": {
@@ -245,15 +300,44 @@
           "default": ".cmsis-dev/workflows",
           "description": "Relative path to the workflow configuration file or directory."
         },
+        "cmsisDev.aiBackend": {
+          "type": "string",
+          "enum": [
+            "vscodeLm",
+            "codexCli"
+          ],
+          "default": "vscodeLm",
+          "description": "How CMSIS-Dev should execute AI workflows."
+        },
+        "cmsisDev.languageModelSelector": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Optional VS Code language model selector for CMSIS-Dev actions. Use the command palette action to populate this setting."
+        },
+        "cmsisDev.languageModelProvider.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "OpenAI-compatible `v1` base URL used by the CMSIS-Dev language model provider for `/models` and `/chat/completions`."
+        },
+        "cmsisDev.languageModelProvider.defaultMaxInputTokens": {
+          "type": "number",
+          "default": 128000,
+          "description": "Fallback maximum input token count used when the provider model catalog does not report one."
+        },
+        "cmsisDev.languageModelProvider.defaultMaxOutputTokens": {
+          "type": "number",
+          "default": 16384,
+          "description": "Fallback maximum output token count used when the provider model catalog does not report one."
+        },
         "cmsisDev.codexModel": {
           "type": "string",
           "default": "",
-          "description": "Optional Codex model override for CMSIS-Dev actions. Leave empty to inherit the model from ~/.codex/config.toml or the Codex default."
+          "description": "Optional Codex model override when the AI backend is set to codexCli."
         },
         "cmsisDev.codexReasoningEffort": {
           "type": "string",
           "default": "",
-          "description": "Optional reasoning effort override for CMSIS-Dev actions. Leave empty to inherit the value from ~/.codex/config.toml or the CMSIS-Dev fallback."
+          "description": "Optional Codex reasoning effort override when the AI backend is set to codexCli."
         }
       }
     }
@@ -266,7 +350,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.16.11",
-    "@types/vscode": "^1.95.0",
+    "@types/vscode": "^1.125.0",
     "typescript": "^5.6.3"
   },
   "dependencies": {
