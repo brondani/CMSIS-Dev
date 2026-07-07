@@ -304,6 +304,10 @@
             "description": "Explain a GitHub issue."
           },
           {
+            "name": "explain-ci-failure",
+            "description": "Explain why a GitHub workflow run is failing."
+          },
+          {
             "name": "plan-next-steps",
             "description": "Continue from a previous CMSIS-Dev run in chat."
           }

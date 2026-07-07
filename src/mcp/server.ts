@@ -14,7 +14,7 @@ const server = new McpServer({
 
 const mcpServer: any = server;
 
-type WorkflowInputType = "text" | "github-pr-context" | "github-issue-context" | "git-local-changes-context";
+type WorkflowInputType = "text" | "github-pr-context" | "github-issue-context" | "git-local-changes-context" | "github-workflow-run-context";
 
 type WorkflowInputDefinition = {
   id: string;
@@ -64,6 +64,38 @@ type IssueComment = {
   author: string;
   body: string;
   createdAt: string;
+};
+
+type WorkflowRunSummary = {
+  id: number;
+  name: string;
+  displayTitle: string;
+  htmlUrl: string;
+  event: string;
+  status: string;
+  conclusion: string;
+  headBranch: string;
+  headSha: string;
+  runNumber: number;
+  attempt: number;
+  actor: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type WorkflowRunJobSummary = {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string;
+  startedAt: string;
+  completedAt: string;
+  steps: Array<{
+    name: string;
+    status: string;
+    conclusion: string;
+    number: number;
+  }>;
 };
 
 type LocalChangesContext = {
@@ -157,6 +189,7 @@ function buildWorkflowToolSchema(workflow: WorkflowDefinition): WorkflowToolSche
   const prContextCount = inputs.filter((input) => input.type === "github-pr-context").length;
   const issueContextCount = inputs.filter((input) => input.type === "github-issue-context").length;
   const localChangesCount = inputs.filter((input) => input.type === "git-local-changes-context").length;
+  const workflowRunContextCount = inputs.filter((input) => input.type === "github-workflow-run-context").length;
 
   for (const input of inputs) {
     const required = input.required !== false;
@@ -193,6 +226,15 @@ function buildWorkflowToolSchema(workflow: WorkflowDefinition): WorkflowToolSche
       continue;
     }
 
+    if (input.type === "github-workflow-run-context") {
+      const names = getWorkflowRunContextArgNames(input.id, workflowRunContextCount);
+      shape[names.owner] = z.string().min(1).describe(`GitHub repository owner for ${label}`);
+      shape[names.repo] = z.string().min(1).describe(`GitHub repository name for ${label}`);
+      shape[names.runId] = z.number().int().positive().describe(`Workflow run id for ${label}`);
+      needsGitHubToken = true;
+      continue;
+    }
+
     return undefined;
   }
 
@@ -215,6 +257,7 @@ async function resolveWorkflowValues(
   const prContextCount = inputs.filter((input) => input.type === "github-pr-context").length;
   const issueContextCount = inputs.filter((input) => input.type === "github-issue-context").length;
   const localChangesCount = inputs.filter((input) => input.type === "git-local-changes-context").length;
+  const workflowRunContextCount = inputs.filter((input) => input.type === "github-workflow-run-context").length;
 
   for (const input of inputs) {
     if (!input.type || input.type === "text") {
@@ -251,6 +294,16 @@ async function resolveWorkflowValues(
       const repoPath = expectStringArg(args, names.repoPath);
       const localChanges = await collectLocalChangesValues(repoPath, input.id, workflowRunsDirPath);
       Object.assign(values, localChanges.values);
+      continue;
+    }
+
+    if (input.type === "github-workflow-run-context") {
+      const names = getWorkflowRunContextArgNames(input.id, workflowRunContextCount);
+      const owner = expectStringArg(args, names.owner);
+      const repo = expectStringArg(args, names.repo);
+      const runId = expectNumberArg(args, names.runId);
+      const workflowRun = await collectWorkflowRunValues(owner, repo, runId, input.id, token);
+      Object.assign(values, workflowRun.values);
       continue;
     }
 
@@ -401,6 +454,65 @@ async function collectLocalChangesValues(
   };
 }
 
+async function collectWorkflowRunValues(
+  owner: string,
+  repo: string,
+  runId: number,
+  inputId: string,
+  token?: string
+): Promise<{ values: Record<string, string> }> {
+  const run = await getWorkflowRun(owner, repo, runId, token);
+  const jobs = await getWorkflowRunJobs(owner, repo, runId, token);
+  const failingJobs = jobs.filter((job) => job.conclusion && job.conclusion !== "success" && job.conclusion !== "skipped");
+  const jobsForLogs = failingJobs.length > 0 ? failingJobs.slice(0, 3) : jobs.slice(0, 2);
+  const logSections = await Promise.all(
+    jobsForLogs.map(async (job) => {
+      try {
+        const log = await getWorkflowJobLog(owner, repo, job.id, token);
+        return `Job: ${job.name}\nConclusion: ${job.conclusion || "(unknown)"}\nLog excerpt:\n${tailText(log, 8_000)}`;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return `Job: ${job.name}\nConclusion: ${job.conclusion || "(unknown)"}\nLog excerpt unavailable: ${message}`;
+      }
+    })
+  );
+
+  const values: Record<string, string> = {
+    [inputId]: run.htmlUrl,
+    [`${inputId}_owner`]: owner,
+    [`${inputId}_repo`]: repo,
+    [`${inputId}_runId`]: String(runId),
+    [`${inputId}_runNumber`]: String(run.runNumber),
+    [`${inputId}_title`]: run.displayTitle,
+    [`${inputId}_event`]: run.event,
+    [`${inputId}_status`]: run.status,
+    [`${inputId}_conclusion`]: run.conclusion || "(No conclusion)",
+    [`${inputId}_branch`]: run.headBranch || "(Unknown branch)",
+    [`${inputId}_sha`]: run.headSha || "(Unknown SHA)",
+    [`${inputId}_actor`]: run.actor,
+    [`${inputId}_url`]: run.htmlUrl,
+    [`${inputId}_failingJobsSummary`]: formatWorkflowRunJobs(jobs),
+    [`${inputId}_logs`]: truncateForPrompt(logSections.join("\n\n---\n\n"), 16_000)
+  };
+
+  values.owner ??= owner;
+  values.repo ??= repo;
+  values.workflowRunId ??= String(runId);
+  values.workflowRunNumber ??= String(run.runNumber);
+  values.workflowRunTitle ??= run.displayTitle;
+  values.workflowRunEvent ??= run.event;
+  values.workflowRunStatus ??= run.status;
+  values.workflowRunConclusion ??= run.conclusion || "(No conclusion)";
+  values.workflowRunBranch ??= run.headBranch || "(Unknown branch)";
+  values.workflowRunSha ??= run.headSha || "(Unknown SHA)";
+  values.workflowRunActor ??= run.actor;
+  values.workflowRunUrl ??= run.htmlUrl;
+  values.failingJobsSummary ??= formatWorkflowRunJobs(jobs);
+  values.workflowRunLogs ??= truncateForPrompt(logSections.join("\n\n---\n\n"), 16_000);
+
+  return { values };
+}
+
 async function getPullRequest(owner: string, repo: string, number: number, token?: string): Promise<PullRequestSummary> {
   const pr: any = await getJson(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, token);
   return {
@@ -498,6 +610,36 @@ async function getIssueReferences(
   };
 }
 
+async function getWorkflowRun(owner: string, repo: string, runId: number, token?: string): Promise<WorkflowRunSummary> {
+  const run: any = await getJson(`https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}`, token);
+  return mapWorkflowRunSummary(run);
+}
+
+async function getWorkflowRunJobs(owner: string, repo: string, runId: number, token?: string): Promise<WorkflowRunJobSummary[]> {
+  const payload: any = await getJson(`https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/jobs?per_page=100`, token);
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  return jobs.map((job: any) => ({
+    id: job.id,
+    name: job.name ?? `Job ${job.id}`,
+    status: job.status ?? "",
+    conclusion: job.conclusion ?? "",
+    startedAt: job.started_at ?? "",
+    completedAt: job.completed_at ?? "",
+    steps: Array.isArray(job.steps)
+      ? job.steps.map((step: any) => ({
+          name: step.name ?? "",
+          status: step.status ?? "",
+          conclusion: step.conclusion ?? "",
+          number: Number(step.number ?? 0)
+        }))
+      : []
+  }));
+}
+
+async function getWorkflowJobLog(owner: string, repo: string, jobId: number, token?: string): Promise<string> {
+  return getTextWithRedirect(`https://api.github.com/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`, token);
+}
+
 async function getJson<T>(url: string, token?: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const request = https.get(
@@ -525,6 +667,52 @@ async function getJson<T>(url: string, token?: string): Promise<T> {
           } catch (error) {
             reject(error);
           }
+        });
+      }
+    );
+
+    request.on("error", reject);
+  });
+}
+
+async function getTextWithRedirect(url: string, token?: string, redirectsRemaining = 5): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "CMSIS-Dev-MCP",
+          Accept: "application/vnd.github+json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      },
+      (response) => {
+        const statusCode = response.statusCode ?? 0;
+        const location = response.headers.location;
+
+        if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+          if (redirectsRemaining <= 0) {
+            reject(new Error(`GitHub log request exceeded redirect limit for ${url}`));
+            return;
+          }
+
+          response.resume();
+          void getTextWithRedirect(location, token, redirectsRemaining - 1).then(resolve, reject);
+          return;
+        }
+
+        let data = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          data += chunk;
+        });
+        response.on("end", () => {
+          if (statusCode < 200 || statusCode >= 300) {
+            reject(new Error(`GitHub API request failed (${statusCode || "unknown"}): ${data}`));
+            return;
+          }
+
+          resolve(data);
         });
       }
     );
@@ -561,6 +749,60 @@ function formatSimpleList(items: string[], emptyText: string): string {
   }
 
   return items.map((item) => `- ${item}`).join("\n");
+}
+
+function formatWorkflowRunJobs(jobs: WorkflowRunJobSummary[]): string {
+  if (jobs.length === 0) {
+    return "(No workflow jobs found)";
+  }
+
+  return jobs
+    .map((job) => {
+      const failingSteps = job.steps.filter((step) => step.conclusion && step.conclusion !== "success" && step.conclusion !== "skipped");
+      const failingStepSummary =
+        failingSteps.length > 0
+          ? ` | failing steps: ${failingSteps.map((step) => step.name).join(", ")}`
+          : "";
+      return `- ${job.name} [status: ${job.status || "unknown"}, conclusion: ${job.conclusion || "unknown"}]${failingStepSummary}`;
+    })
+    .join("\n");
+}
+
+function tailText(value: string, maxLength: number): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `[Truncated to last ${maxLength} characters]\n${normalized.slice(-maxLength)}`;
+}
+
+function truncateForPrompt(value: string, maxLength: number): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength)}\n\n[Truncated by CMSIS-Dev for prompt size.]`;
+}
+
+function mapWorkflowRunSummary(run: any): WorkflowRunSummary {
+  return {
+    id: run.id,
+    name: run.name ?? `Run ${run.id ?? "unknown"}`,
+    displayTitle: run.display_title ?? run.name ?? `Run ${run.id ?? "unknown"}`,
+    htmlUrl: run.html_url ?? "",
+    event: run.event ?? "",
+    status: run.status ?? "",
+    conclusion: run.conclusion ?? "",
+    headBranch: run.head_branch ?? "",
+    headSha: run.head_sha ?? "",
+    runNumber: Number(run.run_number ?? 0),
+    attempt: Number(run.run_attempt ?? 0),
+    actor: run.actor?.login ?? "unknown",
+    createdAt: run.created_at ?? "",
+    updatedAt: run.updated_at ?? ""
+  };
 }
 
 async function readPullRequestTemplates(repoRoot: string): Promise<string> {
@@ -1110,6 +1352,18 @@ function getLocalChangesArgNames(inputId: string, contextCount: number): { repoP
   }
 
   return { repoPath: `${inputId}RepoPath` };
+}
+
+function getWorkflowRunContextArgNames(inputId: string, contextCount: number): { owner: string; repo: string; runId: string } {
+  if (contextCount === 1) {
+    return { owner: "owner", repo: "repo", runId: "runId" };
+  }
+
+  return {
+    owner: `${inputId}Owner`,
+    repo: `${inputId}Repo`,
+    runId: `${inputId}RunId`
+  };
 }
 
 function expectStringArg(args: Record<string, unknown>, key: string): string {

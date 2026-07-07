@@ -30,6 +30,38 @@ export interface CreatedPullRequest {
   title: string;
 }
 
+export interface WorkflowRunSummary {
+  id: number;
+  name: string;
+  displayTitle: string;
+  htmlUrl: string;
+  event: string;
+  status: string;
+  conclusion: string;
+  headBranch: string;
+  headSha: string;
+  runNumber: number;
+  attempt: number;
+  actor: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowRunJobSummary {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string;
+  startedAt: string;
+  completedAt: string;
+  steps: Array<{
+    name: string;
+    status: string;
+    conclusion: string;
+    number: number;
+  }>;
+}
+
 export async function resolveRepoFromWorkspace(): Promise<RepoInfo | undefined> {
   const repos = await resolveReposFromWorkspace();
   return repos[0] ? { owner: repos[0].owner, repo: repos[0].repo } : undefined;
@@ -112,6 +144,19 @@ export function parseRepoFromRemote(remoteUrl: string): RepoInfo | undefined {
   return undefined;
 }
 
+export function parseWorkflowRunUrl(url: string): { owner: string; repo: string; runId: number } | undefined {
+  const match = url.trim().match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)(?:\/.*)?$/i);
+  if (!match) {
+    return undefined;
+  }
+
+  return {
+    owner: match[1],
+    repo: match[2],
+    runId: Number.parseInt(match[3], 10)
+  };
+}
+
 export async function listOpenPullRequests(
   owner: string,
   repo: string,
@@ -140,6 +185,20 @@ export async function listOpenIssues(
   return payload
     .filter((issue) => !issue.pull_request)
     .map(mapIssueSummary);
+}
+
+export async function listFailedWorkflowRuns(
+  owner: string,
+  repo: string,
+  options: GitHubRequestOptions = {}
+): Promise<WorkflowRunSummary[]> {
+  const url = `https://api.github.com/repos/${owner}/${repo}/actions/runs?status=completed&per_page=30`;
+  const payload = await getJson<any>(url, options.token);
+  const runs = Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
+
+  return runs
+    .filter((run: any) => typeof run?.conclusion === "string" && run.conclusion !== "success" && run.conclusion !== "skipped")
+    .map(mapWorkflowRunSummary);
 }
 
 export async function getPullRequest(owner: string, repo: string, number: number, options: GitHubRequestOptions = {}): Promise<PullRequestSummary> {
@@ -233,6 +292,71 @@ export async function getIssueReferences(
   return {
     linkedPullRequests: Array.from(linkedPullRequests).sort(),
     relatedIssues: Array.from(relatedIssues).sort()
+  };
+}
+
+export async function getWorkflowRun(
+  owner: string,
+  repo: string,
+  runId: number,
+  options: GitHubRequestOptions = {}
+): Promise<WorkflowRunSummary> {
+  const run: any = await getJson(`https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}`, options.token);
+  return mapWorkflowRunSummary(run);
+}
+
+export async function getWorkflowRunJobs(
+  owner: string,
+  repo: string,
+  runId: number,
+  options: GitHubRequestOptions = {}
+): Promise<WorkflowRunJobSummary[]> {
+  const payload: any = await getJson(`https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/jobs?per_page=100`, options.token);
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  return jobs.map((job: any) => ({
+    id: job.id,
+    name: job.name ?? `Job ${job.id}`,
+    status: job.status ?? "",
+    conclusion: job.conclusion ?? "",
+    startedAt: job.started_at ?? "",
+    completedAt: job.completed_at ?? "",
+    steps: Array.isArray(job.steps)
+      ? job.steps.map((step: any) => ({
+          name: step.name ?? "",
+          status: step.status ?? "",
+          conclusion: step.conclusion ?? "",
+          number: Number(step.number ?? 0)
+        }))
+      : []
+  }));
+}
+
+export async function getWorkflowJobLog(
+  owner: string,
+  repo: string,
+  jobId: number,
+  options: GitHubRequestOptions = {}
+): Promise<string> {
+  const url = `https://api.github.com/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`;
+  return getTextWithRedirect(url, options.token);
+}
+
+function mapWorkflowRunSummary(run: any): WorkflowRunSummary {
+  return {
+    id: run.id,
+    name: run.name ?? `Run ${run.id ?? "unknown"}`,
+    displayTitle: run.display_title ?? run.name ?? `Run ${run.id ?? "unknown"}`,
+    htmlUrl: run.html_url ?? "",
+    event: run.event ?? "",
+    status: run.status ?? "",
+    conclusion: run.conclusion ?? "",
+    headBranch: run.head_branch ?? "",
+    headSha: run.head_sha ?? "",
+    runNumber: Number(run.run_number ?? 0),
+    attempt: Number(run.run_attempt ?? 0),
+    actor: run.actor?.login ?? "unknown",
+    createdAt: run.created_at ?? "",
+    updatedAt: run.updated_at ?? ""
   };
 }
 
@@ -332,6 +456,52 @@ async function getJson<T>(url: string, token?: string): Promise<T> {
           } catch (error) {
             reject(error);
           }
+        });
+      }
+    );
+
+    request.on("error", reject);
+  });
+}
+
+async function getTextWithRedirect(url: string, token?: string, redirectsRemaining = 5): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "CMSIS-Dev",
+          Accept: "application/vnd.github+json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      },
+      (response) => {
+        const statusCode = response.statusCode ?? 0;
+        const location = response.headers.location;
+
+        if ([301, 302, 303, 307, 308].includes(statusCode) && location) {
+          if (redirectsRemaining <= 0) {
+            reject(new Error(`GitHub log request exceeded redirect limit for ${url}`));
+            return;
+          }
+
+          response.resume();
+          void getTextWithRedirect(location, token, redirectsRemaining - 1).then(resolve, reject);
+          return;
+        }
+
+        let data = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          data += chunk;
+        });
+        response.on("end", () => {
+          if (statusCode < 200 || statusCode >= 300) {
+            reject(new Error(`GitHub API request failed (${statusCode || "unknown"}): ${data}`));
+            return;
+          }
+
+          resolve(data);
         });
       }
     );

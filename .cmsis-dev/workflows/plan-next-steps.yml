@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=../workflow.schema.json
 id: plan-next-steps
 title: Plan Next Steps
-description: Use a previous CMSIS-Dev run to start an interactive follow-up plan in chat.
+description: Use a previous run to create a follow-up plan.
 type: plan-next-steps
 followUps:
   - openReasoning

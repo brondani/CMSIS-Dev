@@ -113,7 +113,8 @@
             "github-pr-context",
             "github-issue-context",
             "git-local-changes-context",
-            "run-output-context"
+            "run-output-context",
+            "github-workflow-run-context"
           ]
         },
         "placeholder": {

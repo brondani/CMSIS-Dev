@@ -1,7 +1,7 @@
 export interface WorkflowInputDefinition {
   id: string;
   label: string;
-  type?: "text" | "github-pr-context" | "github-issue-context" | "git-local-changes-context" | "run-output-context";
+  type?: "text" | "github-pr-context" | "github-issue-context" | "git-local-changes-context" | "run-output-context" | "github-workflow-run-context";
   placeholder?: string;
   required?: boolean;
 }

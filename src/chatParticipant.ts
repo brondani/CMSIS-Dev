@@ -82,6 +82,7 @@ function buildHelpMarkdown(): string {
     "- `/review-changes` to review local changes.",
     "- `/create-pr` to draft a pull request from local changes.",
     "- `/explain-issue` to summarize a GitHub issue.",
+    "- `/explain-ci-failure` to explain why a GitHub workflow run is failing.",
     "- `/plan-next-steps` to continue from a previous CMSIS-Dev result in chat.",
     "",
     "Anything after the slash command is appended as extra instructions for that workflow."

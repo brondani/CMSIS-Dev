@@ -17,8 +17,13 @@ import {
   getIssueReferences,
   getPullRequest,
   getPullRequestFiles,
+  getWorkflowJobLog,
+  getWorkflowRun,
+  getWorkflowRunJobs,
   listOpenIssues,
   listOpenPullRequests,
+  listFailedWorkflowRuns,
+  parseWorkflowRunUrl,
   postPullRequestComment,
   resolveGitReposFromWorkspace
 } from "../github";
@@ -91,6 +96,7 @@ interface ResolvedInputs {
   prContext?: SelectedPrContext;
   issueContext?: SelectedIssueContext;
   localChangesContext?: SelectedLocalChangesContext;
+  workflowRunContext?: SelectedWorkflowRunContext;
 }
 
 interface ActionOutputMetadata {
@@ -116,6 +122,17 @@ interface SelectedRunOutputContext {
   outputFile: vscode.Uri;
   outputText: string;
   metadata: ActionOutputMetadata;
+}
+
+interface SelectedWorkflowRunContext {
+  owner: string;
+  repo: string;
+  runId: number;
+  run: Awaited<ReturnType<typeof getWorkflowRun>>;
+  jobs: Awaited<ReturnType<typeof getWorkflowRunJobs>>;
+  logs: string;
+  rootPath?: string;
+  workspaceFolderName?: string;
 }
 
 interface GenerationOptions {
@@ -777,6 +794,7 @@ async function collectInputValues(
   let prContext: SelectedPrContext | undefined;
   let issueContext: SelectedIssueContext | undefined;
   let localChangesContext: SelectedLocalChangesContext | undefined;
+  let workflowRunContext: SelectedWorkflowRunContext | undefined;
 
   for (const input of workflow.inputs ?? []) {
     if (input.type === "github-pr-context") {
@@ -875,6 +893,54 @@ async function collectInputValues(
       continue;
     }
 
+    if (input.type === "github-workflow-run-context") {
+      const selected = await selectWorkflowRunContext(token, input);
+      if (!selected) {
+        return undefined;
+      }
+
+      workflowRunContext = selected;
+      values[input.id] = selected.run.htmlUrl;
+      values[`${input.id}_owner`] = selected.owner;
+      values[`${input.id}_repo`] = selected.repo;
+      values[`${input.id}_runId`] = String(selected.runId);
+      values[`${input.id}_runNumber`] = String(selected.run.runNumber);
+      values[`${input.id}_title`] = selected.run.displayTitle;
+      values[`${input.id}_event`] = selected.run.event;
+      values[`${input.id}_status`] = selected.run.status;
+      values[`${input.id}_conclusion`] = selected.run.conclusion || "(No conclusion)";
+      values[`${input.id}_branch`] = selected.run.headBranch || "(Unknown branch)";
+      values[`${input.id}_sha`] = selected.run.headSha || "(Unknown SHA)";
+      values[`${input.id}_actor`] = selected.run.actor;
+      values[`${input.id}_url`] = selected.run.htmlUrl;
+      values[`${input.id}_failingJobsSummary`] = formatWorkflowRunJobs(selected.jobs);
+      values[`${input.id}_logs`] = selected.logs;
+      if (selected.rootPath) {
+        values[`${input.id}_repoPath`] = selected.rootPath;
+        values.repoPath ??= selected.rootPath;
+      }
+      if (selected.workspaceFolderName) {
+        values[`${input.id}_workspaceFolder`] = selected.workspaceFolderName;
+        values.workspaceFolder ??= selected.workspaceFolderName;
+      }
+
+      values.owner ??= selected.owner;
+      values.repo ??= selected.repo;
+      values.workflowRunId ??= String(selected.runId);
+      values.workflowRunNumber ??= String(selected.run.runNumber);
+      values.workflowRunTitle ??= selected.run.displayTitle;
+      values.workflowRunEvent ??= selected.run.event;
+      values.workflowRunStatus ??= selected.run.status;
+      values.workflowRunConclusion ??= selected.run.conclusion || "(No conclusion)";
+      values.workflowRunBranch ??= selected.run.headBranch || "(Unknown branch)";
+      values.workflowRunSha ??= selected.run.headSha || "(Unknown SHA)";
+      values.workflowRunActor ??= selected.run.actor;
+      values.workflowRunUrl ??= selected.run.htmlUrl;
+      values.failingJobsSummary ??= formatWorkflowRunJobs(selected.jobs);
+      values.workflowRunLogs ??= selected.logs;
+      continue;
+    }
+
     if (input.type === "run-output-context") {
       const selected = await selectRunOutputContext(workflow, input, options.presetRunOutputUri);
       if (!selected) {
@@ -933,7 +999,7 @@ async function collectInputValues(
     values[input.id] = value;
   }
 
-  return { values, prContext, issueContext, localChangesContext };
+  return { values, prContext, issueContext, localChangesContext, workflowRunContext };
 }
 
 function renderPromptTemplate(template: string, values: Record<string, string>): string {
@@ -1251,6 +1317,131 @@ async function selectLocalChangesContext(input: WorkflowInputDefinition): Promis
   return selected?.repo;
 }
 
+async function selectWorkflowRunContext(
+  token: string | undefined,
+  input: WorkflowInputDefinition
+): Promise<SelectedWorkflowRunContext | undefined> {
+  const source = await vscode.window.showQuickPick(
+    [
+      { label: "Choose from recent failed workflow runs", value: "list" },
+      { label: "Paste workflow run URL", value: "url" }
+    ],
+    {
+      placeHolder: input.label || "How should CMSIS-Dev select the workflow run?"
+    }
+  );
+
+  if (!source) {
+    return undefined;
+  }
+
+  let parsed: { owner: string; repo: string; runId: number } | undefined;
+
+  if (source.value === "url") {
+    const url = await vscode.window.showInputBox({
+      title: "Workflow Run URL",
+      prompt: input.label || "Paste a GitHub workflow run URL",
+      placeHolder: "https://github.com/owner/repo/actions/runs/123456789",
+      ignoreFocusOut: true,
+      validateInput: (value) =>
+        parseWorkflowRunUrl(value) ? null : "Expected format: https://github.com/owner/repo/actions/runs/123456789"
+    });
+
+    if (!url) {
+      return undefined;
+    }
+
+    parsed = parseWorkflowRunUrl(url);
+    if (!parsed) {
+      return undefined;
+    }
+  } else {
+    const workspaceRepos = (await resolveGitReposFromWorkspace()).filter(
+      (repo): repo is { rootPath: string; workspaceFolderName: string; owner: string; repo: string } => Boolean(repo.owner && repo.repo)
+    );
+
+    if (workspaceRepos.length === 0) {
+      vscode.window.showInformationMessage("No workspace repositories with a GitHub origin were found.");
+      return undefined;
+    }
+
+    const uniqueRepos = new Map<string, Array<{ owner: string; repo: string; rootPath: string; workspaceFolderName: string }>>();
+    for (const workspaceRepo of workspaceRepos) {
+      const key = `${workspaceRepo.owner}/${workspaceRepo.repo}`.toLowerCase();
+      const existing = uniqueRepos.get(key) ?? [];
+      existing.push(workspaceRepo);
+      uniqueRepos.set(key, existing);
+    }
+
+    const repoResults = await Promise.all(
+      Array.from(uniqueRepos.values()).map(async (repoInfos) => {
+        const [repoInfo] = repoInfos;
+        const runs = await listFailedWorkflowRuns(repoInfo.owner, repoInfo.repo, { token });
+        return { repoInfos, runs };
+      })
+    );
+
+    const quickPickItems = repoResults.flatMap(({ repoInfos, runs }) =>
+      repoInfos.flatMap((repoInfo) =>
+        runs.map((run) => ({
+          label: `${run.name} #${run.runNumber}`,
+          description: `${repoInfo.owner}/${repoInfo.repo} (${repoInfo.workspaceFolderName})`,
+          detail: `${run.conclusion || run.status} | ${run.headBranch || "(unknown branch)"} | ${run.displayTitle}`,
+          owner: repoInfo.owner,
+          repo: repoInfo.repo,
+          runId: run.id
+        }))
+      )
+    );
+
+    if (quickPickItems.length === 0) {
+      vscode.window.showInformationMessage("No recent failed workflow runs were found in workspace repositories.");
+      return undefined;
+    }
+
+    const selectedRun = await vscode.window.showQuickPick(quickPickItems, {
+      placeHolder: "Select a failed workflow run"
+    });
+    if (!selectedRun) {
+      return undefined;
+    }
+
+    parsed = {
+      owner: selectedRun.owner,
+      repo: selectedRun.repo,
+      runId: selectedRun.runId
+    };
+  }
+
+  const run = await getWorkflowRun(parsed.owner, parsed.repo, parsed.runId, { token });
+  const jobs = await getWorkflowRunJobs(parsed.owner, parsed.repo, parsed.runId, { token });
+  const failingJobs = jobs.filter((job) => job.conclusion && job.conclusion !== "success" && job.conclusion !== "skipped");
+  const jobsForLogs = failingJobs.length > 0 ? failingJobs.slice(0, 3) : jobs.slice(0, 2);
+  const logSections = await Promise.all(
+    jobsForLogs.map(async (job) => {
+      try {
+        const log = await getWorkflowJobLog(parsed.owner, parsed.repo, job.id, { token });
+        return `Job: ${job.name}\nConclusion: ${job.conclusion || "(unknown)"}\nLog excerpt:\n${tailText(log, 8_000)}`;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return `Job: ${job.name}\nConclusion: ${job.conclusion || "(unknown)"}\nLog excerpt unavailable: ${message}`;
+      }
+    })
+  );
+
+  const workspaceRepo = await resolveWorkspaceRepoForRemote(parsed.owner, parsed.repo);
+  return {
+    owner: parsed.owner,
+    repo: parsed.repo,
+    runId: parsed.runId,
+    run,
+    jobs,
+    logs: truncateForPrompt(logSections.join("\n\n---\n\n"), 16_000),
+    rootPath: workspaceRepo?.rootPath,
+    workspaceFolderName: workspaceRepo?.workspaceFolderName
+  };
+}
+
 async function selectRunOutputContext(
   workflow: Pick<WorkflowDefinition, "id" | "title">,
   input: WorkflowInputDefinition,
@@ -1488,6 +1679,30 @@ function formatSimpleList(items: string[], emptyText: string): string {
   return items.map((item) => `- ${item}`).join("\n");
 }
 
+function formatWorkflowRunJobs(
+  jobs: Array<{
+    name: string;
+    status: string;
+    conclusion: string;
+    steps: Array<{ name: string; conclusion: string }>;
+  }>
+): string {
+  if (jobs.length === 0) {
+    return "(No workflow jobs found)";
+  }
+
+  return jobs
+    .map((job) => {
+      const failingSteps = job.steps.filter((step) => step.conclusion && step.conclusion !== "success" && step.conclusion !== "skipped");
+      const failingStepSummary =
+        failingSteps.length > 0
+          ? ` | failing steps: ${failingSteps.map((step) => step.name).join(", ")}`
+          : "";
+      return `- ${job.name} [status: ${job.status || "unknown"}, conclusion: ${job.conclusion || "unknown"}]${failingStepSummary}`;
+    })
+    .join("\n");
+}
+
 function resolveAllowedSourceWorkflowIds(workflowId: string): readonly string[] | undefined {
   if (workflowId === "plan-next-steps") {
     return ["review-pr", "review-changes", "explain-issue"];
@@ -1535,6 +1750,24 @@ function truncateRunOutputForPrompt(value: string): string {
   }
 
   return `${trimmed.slice(0, 12_000)}\n\n[Truncated by CMSIS-Dev for chat context.]`;
+}
+
+function tailText(value: string, maxLength: number): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `[Truncated to last ${maxLength} characters]\n${normalized.slice(-maxLength)}`;
+}
+
+function truncateForPrompt(value: string, maxLength: number): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength)}\n\n[Truncated by CMSIS-Dev for prompt size.]`;
 }
 
 async function readPullRequestTemplates(repoRoot: string): Promise<string> {

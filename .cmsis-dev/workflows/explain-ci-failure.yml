@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=../workflow.schema.json
+id: explain-ci-failure
+title: Explain CI Failure
+description: Fetch a GitHub workflow run and explain why it is failing.
+type: explain-ci-failure
+followUps:
+  - openReasoning
+inputs:
+  - id: workflowRun
+    label: GitHub Workflow Run URL
+    type: github-workflow-run-context
+    required: true
+promptTemplate: |
+  You are an experienced software engineer analyzing a failing CI workflow.
+
+  Explain the failure concisely and technically for a developer who needs to fix it.
+  Focus on the actual failing jobs and the evidence from the logs.
+  Avoid repeating low-value workflow metadata unless it helps explain the failure.
+
+  Please provide:
+
+  1. Short summary
+  2. Failing jobs and what each one is doing
+  3. Most likely root cause
+  4. Evidence from the logs
+  5. Concrete next steps to fix it
+  6. Any uncertainties or missing information
+
+  Repository: {{owner}}/{{repo}}
+  Workflow run: #{{workflowRunNumber}} {{workflowRunTitle}}
+  Event: {{workflowRunEvent}}
+  Branch: {{workflowRunBranch}}
+  Status: {{workflowRunStatus}}
+  Conclusion: {{workflowRunConclusion}}
+  Actor: @{{workflowRunActor}}
+  URL: {{workflowRunUrl}}
+
+  Failing jobs:
+  {{failingJobsSummary}}
+
+  Log excerpts:
+  {{workflowRunLogs}}
