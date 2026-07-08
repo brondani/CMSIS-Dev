@@ -156,10 +156,6 @@ export interface ActiveOutputFollowUpState {
 }
 
 const DEFAULT_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning"];
-const LEGACY_PR_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "openPr", "postComment"];
-const LEGACY_CREATE_PR_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "submitPr"];
-const LEGACY_REVIEW_LOCAL_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning"];
-const LEGACY_ISSUE_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning", "openIssue"];
 const EMPTY_ACTIVE_OUTPUT_FOLLOW_UP_STATE: ActiveOutputFollowUpState = {
   canOpenReasoning: false,
   canOpenPr: false,
@@ -1705,7 +1701,7 @@ function formatWorkflowRunJobs(
 
 function resolveAllowedSourceWorkflowIds(workflowId: string): readonly string[] | undefined {
   if (workflowId === "plan-next-steps") {
-    return ["review-pr", "review-changes", "explain-issue"];
+    return ["review-pr", "review-changes", "explain-issue", "explain-ci-failure"];
   }
 
   return undefined;
@@ -2266,22 +2262,6 @@ function resolveWorkflowFollowUps(workflow: Pick<WorkflowDefinition, "id" | "typ
     return configured;
   }
 
-  if (workflow.id === "review-pr" || workflow.type === "review-pr") {
-    return [...LEGACY_PR_OUTPUT_FOLLOW_UPS];
-  }
-
-  if (workflow.id === "review-changes" || workflow.type === "review-changes") {
-    return [...LEGACY_REVIEW_LOCAL_OUTPUT_FOLLOW_UPS];
-  }
-
-  if (workflow.id === "create-pr" || workflow.type === "create-pr") {
-    return [...LEGACY_CREATE_PR_OUTPUT_FOLLOW_UPS];
-  }
-
-  if (workflow.id === "explain-issue" || workflow.type === "explain-issue") {
-    return [...LEGACY_ISSUE_OUTPUT_FOLLOW_UPS];
-  }
-
   return [...DEFAULT_OUTPUT_FOLLOW_UPS];
 }
 
@@ -2296,22 +2276,6 @@ function resolveMetadataFollowUps(
   const configured = normalizeFollowUps(metadata.followUps);
   if (configured.length > 0) {
     return configured;
-  }
-
-  if (metadata.prContext) {
-    return [...LEGACY_PR_OUTPUT_FOLLOW_UPS];
-  }
-
-  if (metadata.workflowId === "review-changes") {
-    return [...LEGACY_REVIEW_LOCAL_OUTPUT_FOLLOW_UPS];
-  }
-
-  if (metadata.pullRequestDraft) {
-    return [...LEGACY_CREATE_PR_OUTPUT_FOLLOW_UPS];
-  }
-
-  if (metadata.issueContext) {
-    return [...LEGACY_ISSUE_OUTPUT_FOLLOW_UPS];
   }
 
   return [...DEFAULT_OUTPUT_FOLLOW_UPS];

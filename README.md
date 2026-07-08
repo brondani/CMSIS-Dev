@@ -5,7 +5,7 @@ CMSIS-Dev is a basic VS Code extension scaffold that provides:
 - An **AI Actions** view in the Explorer for running workflows.
 - Bundled workflow configuration files shipped inside the extension installation.
 - Optional workspace workflow overrides under `.cmsis-dev/workflows/` (one YAML file per action).
-- Dynamic AI actions loaded from bundled defaults plus workspace overrides or a legacy `workflows.yml`.
+- Dynamic AI actions loaded from bundled defaults plus workspace overrides.
 - A bundled **MCP server** that exposes tools derived from the workflow config.
 
 ## Implemented MVP flow: Explain Issue
@@ -68,7 +68,6 @@ These enable persistent actions even after notifications disappear.
 - AI actions are loaded dynamically from the bundled `.cmsis-dev/workflows/` directory in the extension by default.
 - Optional workspace files in `.cmsis-dev/workflows/` override bundled workflows with the same `id`.
 - One YAML file per action is the preferred layout.
-- Legacy single-file configs in `.cmsis-dev/workflows.yml` are still supported.
 - No per-workflow command needs to be added to `package.json`.
 - Use `CMSIS-Dev: Create Workflow Overrides` to scaffold editable workspace copies when needed.
 - Add a new workspace `.yml` file under `.cmsis-dev/workflows/`, refresh the view, and run it from the AI Actions tree.
@@ -141,7 +140,7 @@ Use VS Code SecretStorage commands (no plaintext settings):
 
 Settings:
 
-- `cmsisDev.workflowConfigPath`: workspace workflow override file or directory path (default `.cmsis-dev/workflows`).
+- `cmsisDev.workflowConfigPath`: workspace workflow override directory path (default `.cmsis-dev/workflows`).
 - `cmsisDev.languageModelSelector`: optional VS Code language model selector saved by the `CMSIS-Dev: Set VS Code Model` command.
 - `cmsisDev.languageModelProvider.baseUrl`: OpenAI-compatible `v1` base URL used by the built-in CMSIS-Dev model provider.
 
@@ -179,7 +178,7 @@ Source file: `src/mcp/server.ts`
 
 Build output: `out/mcp/server.js`
 
-Exposed tools are derived from the bundled workflow files plus any workspace overrides in `.cmsis-dev/workflows/*.yml` or the legacy `.cmsis-dev/workflows.yml`.
+Exposed tools are derived from the bundled workflow files plus any workspace overrides in `.cmsis-dev/workflows/*.yml`.
 Workflow ids are converted to MCP tool names by replacing `-` with `_`.
 
 With the default workflow set, the MCP server exposes:

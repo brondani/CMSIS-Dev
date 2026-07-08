@@ -1144,11 +1144,6 @@ async function resolveWorkspaceWorkflowConfigPath(): Promise<string | undefined>
     return directDir;
   }
 
-  const directPath = path.join(process.cwd(), ".cmsis-dev", "workflows.yml");
-  if (await fileExists(directPath)) {
-    return directPath;
-  }
-
   const nestedPath = await findNestedWorkflowConfig(process.cwd(), 6);
   if (nestedPath) {
     return nestedPath;
@@ -1167,11 +1162,9 @@ async function findNestedWorkflowConfig(rootDir: string, maxDepth: number): Prom
       continue;
     }
 
-    const candidates = [path.join(current.dir, ".cmsis-dev", "workflows"), path.join(current.dir, ".cmsis-dev", "workflows.yml")];
-    for (const candidate of candidates) {
-      if (await fileExists(candidate)) {
-        return candidate;
-      }
+    const candidate = path.join(current.dir, ".cmsis-dev", "workflows");
+    if (await fileExists(candidate)) {
+      return candidate;
     }
 
     if (current.depth >= maxDepth) {

@@ -690,7 +690,7 @@ function createWorkflowWatchers(configuredWorkflowPath: string): vscode.FileSyst
   const normalizedConfiguredPath = configuredWorkflowPath.replace(/\\/g, "/");
   const patterns =
     normalizedConfiguredPath === DEFAULT_WORKFLOW_CONFIG_PATH
-      ? ["**/.cmsis-dev/workflows.yml", "**/.cmsis-dev/workflows/*.yml", "**/.cmsis-dev/workflows/*.yaml"]
+      ? ["**/.cmsis-dev/workflows/*.yml", "**/.cmsis-dev/workflows/*.yaml"]
       : normalizedConfiguredPath.endsWith(".yml") || normalizedConfiguredPath.endsWith(".yaml")
         ? [`**/${normalizedConfiguredPath}`]
         : [`**/${normalizedConfiguredPath}/*.yml`, `**/${normalizedConfiguredPath}/*.yaml`];

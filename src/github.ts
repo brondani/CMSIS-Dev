@@ -192,7 +192,7 @@ export async function listFailedWorkflowRuns(
   repo: string,
   options: GitHubRequestOptions = {}
 ): Promise<WorkflowRunSummary[]> {
-  const url = `https://api.github.com/repos/${owner}/${repo}/actions/runs?status=completed&per_page=30`;
+  const url = `https://api.github.com/repos/${owner}/${repo}/actions/runs?status=completed&per_page=100`;
   const payload = await getJson<any>(url, options.token);
   const runs = Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
 

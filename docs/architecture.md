@@ -118,8 +118,7 @@ The workflow registry is implemented in `src/workflowConfig.ts`.
 The effective registry is:
 
 - bundled workflows in `.cmsis-dev/workflows/` inside the extension installation,
-- optionally overridden by workspace files in `.cmsis-dev/workflows/`,
-- with legacy support for `.cmsis-dev/workflows.yml`.
+- optionally overridden by workspace files in `.cmsis-dev/workflows/`.
 
 Merge rule:
 

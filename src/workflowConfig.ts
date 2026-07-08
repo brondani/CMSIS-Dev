@@ -5,7 +5,6 @@ import { parse, stringify } from "yaml";
 import { WorkflowDefinition, WorkflowFollowUp } from "./types";
 
 export const DEFAULT_WORKFLOW_CONFIG_PATH = ".cmsis-dev/workflows";
-const LEGACY_DEFAULT_WORKFLOW_CONFIG_PATH = ".cmsis-dev/workflows.yml";
 const WORKFLOW_SCHEMA_FILENAME = "workflow.schema.json";
 const DEFAULT_OUTPUT_FOLLOW_UPS: readonly WorkflowFollowUp[] = ["openReasoning"];
 
@@ -149,13 +148,12 @@ export async function resolveWorkspaceWorkflowConfigUri(createIfMissing = false)
     }
   }
 
-  // If default config path is used, support nested .cmsis-dev workflow directories and legacy single-file configs.
+  // If the default config path is used, support nested .cmsis-dev workflow directories.
   if (configuredPath === DEFAULT_WORKFLOW_CONFIG_PATH) {
     for (const workspaceFolder of workspaceFolders) {
       const patterns = [
         { pattern: "**/.cmsis-dev/workflows/*.yml", asDirectory: true },
-        { pattern: "**/.cmsis-dev/workflows/*.yaml", asDirectory: true },
-        { pattern: "**/.cmsis-dev/workflows.yml", asDirectory: false }
+        { pattern: "**/.cmsis-dev/workflows/*.yaml", asDirectory: true }
       ];
       for (const candidate of patterns) {
         const matches = await vscode.workspace.findFiles(
@@ -606,6 +604,29 @@ async function normalizeWorkflows(workflows: WorkflowDefinition[]): Promise<Work
               id: "issue",
               label: "GitHub Issue",
               type: "github-issue-context" as const,
+              required: true
+            },
+            ...(workflow.inputs ?? [])
+          ];
+
+      return {
+        ...workflow,
+        inputs,
+        promptTemplate: workflow.promptTemplate?.trim() ? workflow.promptTemplate : starter?.promptTemplate,
+        followUps: normalizeFollowUps(workflow.followUps, starter?.followUps ?? DEFAULT_OUTPUT_FOLLOW_UPS)
+      };
+    }
+
+    if (workflow.id === "explain-ci-failure" || workflow.type === "explain-ci-failure") {
+      const starter = starterById.get("explain-ci-failure");
+      const hasWorkflowRunContextInput = (workflow.inputs ?? []).some((input) => input.type === "github-workflow-run-context");
+      const inputs = hasWorkflowRunContextInput
+        ? workflow.inputs
+        : [
+            {
+              id: "workflowRun",
+              label: "GitHub Workflow Run",
+              type: "github-workflow-run-context" as const,
               required: true
             },
             ...(workflow.inputs ?? [])

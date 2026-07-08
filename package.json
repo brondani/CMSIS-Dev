@@ -327,7 +327,7 @@
         "cmsisDev.workflowConfigPath": {
           "type": "string",
           "default": ".cmsis-dev/workflows",
-          "description": "Relative path to the workflow configuration file or directory."
+          "description": "Relative path to the workflow configuration directory."
         },
         "cmsisDev.languageModelSelector": {
           "type": "object",
