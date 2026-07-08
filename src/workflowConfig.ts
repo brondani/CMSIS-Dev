@@ -571,8 +571,8 @@ async function normalizeWorkflows(workflows: WorkflowDefinition[]): Promise<Work
       };
     }
 
-    if (workflow.id === "create-pr" || workflow.type === "create-pr") {
-      const starter = starterById.get("create-pr");
+    if (workflow.id === "create-pr" || workflow.type === "create-pr" || workflow.id === "commit-message" || workflow.type === "commit-message") {
+      const starter = starterById.get(workflow.id === "commit-message" || workflow.type === "commit-message" ? "commit-message" : "create-pr");
       const hasLocalChangesInput = (workflow.inputs ?? []).some((input) => input.type === "git-local-changes-context");
       const inputs = hasLocalChangesInput
         ? workflow.inputs
@@ -651,7 +651,7 @@ function normalizeFollowUps(
   followUps: WorkflowFollowUp[] | undefined,
   fallback: readonly WorkflowFollowUp[]
 ): WorkflowFollowUp[] {
-  const allowed = new Set<WorkflowFollowUp>(["openReasoning", "openPr", "openIssue", "postComment", "submitPr"]);
+  const allowed = new Set<WorkflowFollowUp>(["openReasoning", "openPr", "openIssue", "postComment", "submitPr", "commitChanges"]);
   const normalized = Array.from(
     new Set((followUps ?? [...fallback]).filter((followUp) => allowed.has(followUp)))
   ) as WorkflowFollowUp[];

@@ -13,11 +13,11 @@ inputs:
 promptTemplate: |
   You are Codex acting as a senior reviewer. Produce a detailed, actionable code review for the tracked local changes in this repository compared to the HEAD of the default branch.
   Focus on correctness, regressions, edge cases, reliability, security, maintainability, and tests.
-  Use this output format:
-  1) Findings (ordered by severity: High, Medium, Low)
-  2) Suggested fixes per finding
-  3) Test gaps
-  4) Final summary
+  Use Markdown heading levels consistently. Top-level review sections must use level-2 headings, and any subsections under them must use level-3 headings or lower:
+  ## 1. Findings (ordered by severity: High, Medium, Low)
+  ## 2. Suggested fixes per finding
+  ## 3. Test gaps
+  ## 4. Final summary
   For every finding include: file path, why it matters, and concrete fix guidance.
   If no issues are found, say so explicitly and list residual risks.
 

@@ -39,6 +39,16 @@
         "title": "CMSIS-Dev: Run AI Action in Chat"
       },
       {
+        "command": "cmsisDev.commitMessageInChat",
+        "title": "CMSIS-Dev: Commit Message",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "cmsisDev.reviewChangesInChat",
+        "title": "CMSIS-Dev: Review Changes",
+        "icon": "$(comment-discussion)"
+      },
+      {
         "command": "cmsisDev.initializeWorkflows",
         "title": "CMSIS-Dev: Create Workflow Overrides"
       },
@@ -114,6 +124,11 @@
         "command": "cmsisDev.submitPrForActiveOutput",
         "title": "CMSIS-Dev: Submit PR",
         "icon": "$(git-pull-request-create)"
+      },
+      {
+        "command": "cmsisDev.commitChangesForActiveOutput",
+        "title": "CMSIS-Dev: Commit Changes",
+        "icon": "$(git-commit)"
       }
     ],
     "views": {
@@ -161,6 +176,18 @@
           "group": "navigation"
         }
       ],
+      "scm/title": [
+        {
+          "command": "cmsisDev.reviewChangesInChat",
+          "when": "scmProvider == git",
+          "group": "navigation@10"
+        },
+        {
+          "command": "cmsisDev.commitMessageInChat",
+          "when": "scmProvider == git",
+          "group": "navigation@11"
+        }
+      ],
       "view/item/context": [
         {
           "command": "cmsisDev.openPrForActiveOutput",
@@ -198,9 +225,14 @@
           "group": "inline@7"
         },
         {
+          "command": "cmsisDev.commitChangesForActiveOutput",
+          "when": "view == cmsisDev.runs && viewItem =~ /(^|\\.)canCommitChanges(\\.|$)/",
+          "group": "inline@8"
+        },
+        {
           "command": "cmsisDev.deleteRuns",
           "when": "view == cmsisDev.runs && viewItem =~ /^cmsisDev\\.runOutput(\\.|$)/",
-          "group": "inline@8"
+          "group": "inline@9"
         },
         {
           "command": "cmsisDev.openPrForActiveOutput",
@@ -238,9 +270,14 @@
           "group": "2_cmsisDev@7"
         },
         {
+          "command": "cmsisDev.commitChangesForActiveOutput",
+          "when": "view == cmsisDev.runs && viewItem =~ /(^|\\.)canCommitChanges(\\.|$)/",
+          "group": "2_cmsisDev@8"
+        },
+        {
           "command": "cmsisDev.deleteRuns",
           "when": "view == cmsisDev.runs && viewItem =~ /^cmsisDev\\.runOutput(\\.|$)/",
-          "group": "2_cmsisDev@8"
+          "group": "2_cmsisDev@9"
         }
       ]
     },
@@ -266,7 +303,11 @@
           },
           {
             "name": "create-pr",
-            "description": "Draft a pull request from local changes."
+            "description": "Draft a pull request from committed branch changes."
+          },
+          {
+            "name": "commit-message",
+            "description": "Generate a commit message from local changes."
           },
           {
             "name": "explain-issue",

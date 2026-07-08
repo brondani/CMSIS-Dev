@@ -77,7 +77,8 @@
               "openPr",
               "openIssue",
               "postComment",
-              "submitPr"
+              "submitPr",
+              "commitChanges"
             ]
           }
         },

@@ -292,7 +292,9 @@ async function resolveWorkflowValues(
     if (input.type === "git-local-changes-context") {
       const names = getLocalChangesArgNames(input.id, localChangesCount);
       const repoPath = expectStringArg(args, names.repoPath);
-      const localChanges = await collectLocalChangesValues(repoPath, input.id, workflowRunsDirPath);
+      const localChanges = await collectLocalChangesValues(repoPath, input.id, workflowRunsDirPath, {
+        committedOnly: workflow.id === "create-pr"
+      });
       Object.assign(values, localChanges.values);
       continue;
     }
@@ -387,7 +389,8 @@ function applyIssueValues(
 async function collectLocalChangesValues(
   repoRoot: string,
   inputId: string,
-  workflowRunsDirPath: string
+  workflowRunsDirPath: string,
+  options: { committedOnly?: boolean } = {}
 ): Promise<{ context: LocalChangesContext; values: Record<string, string> }> {
   const defaultRef = await resolveDefaultBranchRef(repoRoot);
   if (!defaultRef) {
@@ -395,16 +398,16 @@ async function collectLocalChangesValues(
   }
 
   const currentBranch = (await runGitCommand(repoRoot, ["branch", "--show-current"])).trim() || "detached HEAD";
-  const changedEntries = await getTrackedDiffEntries(repoRoot, defaultRef.ref);
-  const untrackedFiles = await getUntrackedFiles(repoRoot);
-  if (changedEntries.length === 0 && untrackedFiles.length === 0) {
+  const compareRef = options.committedOnly ? `${defaultRef.ref}...HEAD` : defaultRef.ref;
+  const changedEntries = await getTrackedDiffEntries(repoRoot, compareRef);
+  if (changedEntries.length === 0) {
     throw new Error(`No local changes found in repository '${repoRoot}'.`);
   }
 
-  const fileSections = await formatLocalChangeSections(repoRoot, defaultRef.ref, changedEntries, untrackedFiles);
+  const fileSections = await formatLocalChangeSections(repoRoot, compareRef, changedEntries);
   const latestLocalReview = await findLatestLocalReviewSummary(repoRoot, workflowRunsDirPath);
   const pullRequestTemplates = await readPullRequestTemplates(repoRoot);
-  const changedFilesList = [...changedEntries.map((entry) => entry.displayPath), ...untrackedFiles];
+  const changedFilesList = changedEntries.map((entry) => entry.displayPath);
   const uniqueChangedFiles = Array.from(new Set(changedFilesList));
   const repoInfo = await resolveRepoInfoFromGit(repoRoot);
   const workspaceFolderName = path.basename(repoRoot);
@@ -414,7 +417,7 @@ async function collectLocalChangesValues(
     [`${inputId}_workspaceFolder`]: workspaceFolderName,
     [`${inputId}_currentBranch`]: currentBranch,
     [`${inputId}_defaultBranch`]: defaultRef.shortName,
-    [`${inputId}_compareRef`]: defaultRef.ref,
+    [`${inputId}_compareRef`]: compareRef,
     [`${inputId}_changedFiles`]: formatSimpleList(uniqueChangedFiles, "(No changed files found)"),
     [`${inputId}_changedFilesCount`]: String(uniqueChangedFiles.length),
     [`${inputId}_fileSections`]: fileSections,
@@ -426,7 +429,7 @@ async function collectLocalChangesValues(
   values.workspaceFolder ??= workspaceFolderName;
   values.currentBranch ??= currentBranch;
   values.defaultBranch ??= defaultRef.shortName;
-  values.compareRef ??= defaultRef.ref;
+  values.compareRef ??= compareRef;
   values.changedFiles ??= formatSimpleList(uniqueChangedFiles, "(No changed files found)");
   values.changedFilesCount ??= String(uniqueChangedFiles.length);
   values.fileSections ??= fileSections;
@@ -446,7 +449,7 @@ async function collectLocalChangesValues(
       owner: repoInfo?.owner,
       repo: repoInfo?.repo,
       currentBranch,
-      defaultRef: defaultRef.ref,
+      defaultRef: compareRef,
       defaultBranchName: defaultRef.shortName,
       changedFiles: uniqueChangedFiles.length
     },
@@ -1002,19 +1005,10 @@ async function getTrackedDiffEntries(
     });
 }
 
-async function getUntrackedFiles(repoRoot: string): Promise<string[]> {
-  const raw = await runGitCommand(repoRoot, ["ls-files", "--others", "--exclude-standard"]);
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
 async function formatLocalChangeSections(
   repoRoot: string,
   defaultRef: string,
-  changedEntries: Array<{ status: string; displayPath: string; pathSpec: string }>,
-  untrackedFiles: string[]
+  changedEntries: Array<{ status: string; displayPath: string; pathSpec: string }>
 ): Promise<string> {
   const trackedSections = await Promise.all(
     changedEntries.map(async (entry) => {
@@ -1026,22 +1020,7 @@ async function formatLocalChangeSections(
     })
   );
 
-  const untrackedSections = await Promise.all(
-    untrackedFiles.map(async (filePath) => {
-      const absolutePath = path.join(repoRoot, filePath);
-      let content = "(Binary or unreadable untracked file)";
-      try {
-        const buffer = await fs.readFile(absolutePath);
-        content = buffer.includes(0) ? "(Binary untracked file)" : buffer.toString("utf8").slice(0, 4000);
-      } catch {
-        // Keep fallback text.
-      }
-
-      return `File: ${filePath}\nStatus: ??\nPatch:\n${content}`;
-    })
-  );
-
-  return [...trackedSections, ...untrackedSections].join("\n\n---\n\n");
+  return trackedSections.join("\n\n---\n\n");
 }
 
 async function runGitCommand(

@@ -11,6 +11,7 @@ import {
   getConfiguredReasoningEffort
 } from "../reasoningEffort";
 import {
+  createPullRequestReview,
   createPullRequest,
   getIssue,
   getIssueComments,
@@ -24,7 +25,6 @@ import {
   listOpenPullRequests,
   listFailedWorkflowRuns,
   parseWorkflowRunUrl,
-  postPullRequestComment,
   resolveGitReposFromWorkspace
 } from "../github";
 import { getGitHubToken } from "../secrets";
@@ -40,6 +40,15 @@ import {
 import { resolveWorkflowRunsDirUri } from "../workflowConfig";
 
 type ReviewEngine = "vscodeLm";
+
+type GitExtensionApi = {
+  repositories: Array<{
+    rootUri: vscode.Uri;
+    inputBox: {
+      value: string;
+    };
+  }>;
+};
 
 export interface PromptWorkflowOptions {
   onStatus?: (status: string) => void;
@@ -76,8 +85,16 @@ interface SelectedPrContext {
   owner: string;
   repo: string;
   pr: PullRequestSummary;
+  files?: PullRequestFile[];
   rootPath?: string;
   workspaceFolderName?: string;
+}
+
+interface PullRequestReviewSuggestion {
+  path: string;
+  line: number;
+  body: string;
+  suggestion: string;
 }
 
 interface SelectedIssueContext {
@@ -102,6 +119,11 @@ interface SelectedLocalChangesContext {
 interface PullRequestDraft {
   title: string;
   body: string;
+}
+
+interface CommitDraft {
+  subject: string;
+  body?: string;
 }
 
 interface ResolvedInputs {
@@ -130,6 +152,7 @@ interface ActionOutputMetadata {
   prContext?: SelectedPrContext;
   issueContext?: SelectedIssueContext;
   localChangesContext?: SelectedLocalChangesContext;
+  commitDraft?: CommitDraft;
 }
 
 interface SelectedRunOutputContext {
@@ -167,6 +190,7 @@ export interface ActiveOutputFollowUpState {
   canOpenIssue: boolean;
   canPostComment: boolean;
   canSubmitPr: boolean;
+  canCommitChanges: boolean;
 }
 
 const DEFAULT_OUTPUT_FOLLOW_UPS: WorkflowFollowUp[] = ["openReasoning"];
@@ -175,7 +199,8 @@ const EMPTY_ACTIVE_OUTPUT_FOLLOW_UP_STATE: ActiveOutputFollowUpState = {
   canOpenPr: false,
   canOpenIssue: false,
   canPostComment: false,
-  canSubmitPr: false
+  canSubmitPr: false,
+  canCommitChanges: false
 };
 
 export async function runPromptWorkflow(
@@ -229,6 +254,9 @@ export async function runPromptWorkflow(
   if (followUpState.canSubmitPr) {
     actions.push("Submit PR");
   }
+  if (followUpState.canCommitChanges) {
+    actions.push("Commit Changes");
+  }
   actions.push("Open Output");
 
   const action = await vscode.window.showInformationMessage(
@@ -255,6 +283,10 @@ export async function runPromptWorkflow(
 
   if (action === "Submit PR") {
     await submitPullRequestFromMetadata(metadata);
+  }
+
+  if (action === "Commit Changes") {
+    await commitChangesFromMetadata(metadata);
   }
 
   return {
@@ -314,6 +346,7 @@ async function executeWorkflowGeneration(
   const engine: ReviewEngine = "vscodeLm";
   const reasoningEffort = getConfiguredReasoningEffort();
   let pullRequestDraft: PullRequestDraft | undefined;
+  let commitDraft: CommitDraft | undefined;
 
   const liveReasoningFile = await createTransientReasoningFile();
   const liveReasoningPayload: Record<string, unknown> = {
@@ -324,6 +357,7 @@ async function executeWorkflowGeneration(
     workflowTitle: workflow.title,
     followUps,
     pullRequestDraft,
+    commitDraft,
     reasoningEffort,
     engine,
     metrics: {
@@ -357,6 +391,7 @@ async function executeWorkflowGeneration(
   }
 
   pullRequestDraft = workflow.id === "create-pr" || workflow.type === "create-pr" ? parsePullRequestDraft(generated.content) : undefined;
+  commitDraft = workflow.id === "commit-message" || workflow.type === "commit-message" ? parseCommitDraft(generated.content) : undefined;
 
   options.onStatus?.(`Saving ${workflow.title} output`);
   const workflowCompletedAtMs = Date.now();
@@ -369,6 +404,8 @@ async function executeWorkflowGeneration(
   const output = renderOutputWithExecutionInfo(
     workflow.id === "create-pr" || workflow.type === "create-pr"
       ? renderPullRequestDraftOutput(generated.content, pullRequestDraft)
+      : workflow.id === "commit-message" || workflow.type === "commit-message"
+        ? renderCommitDraftOutput(generated.content, commitDraft)
       : generated.content,
     {
       agentName: generated.agentName,
@@ -392,6 +429,7 @@ async function executeWorkflowGeneration(
     workflowTitle: workflow.title,
     followUps,
     pullRequestDraft,
+    commitDraft,
     reasoningEffort,
     engine,
     agentName: generated.agentName,
@@ -416,6 +454,7 @@ async function executeWorkflowGeneration(
     workflowTitle: workflow.title,
     followUps,
     pullRequestDraft,
+    commitDraft,
     reasoningEffort,
     engine,
     agentName: generated.agentName,
@@ -603,6 +642,34 @@ export async function submitPrForOutputUri(outputUri: vscode.Uri): Promise<void>
   await submitPullRequestFromMetadata(metadata);
 }
 
+export async function commitChangesForActiveOutput(): Promise<void> {
+  const metadata = await getMetadataForActiveOutput();
+  if (!metadata) {
+    return;
+  }
+
+  if (!getActiveOutputFollowUpStateFromMetadata(metadata).canCommitChanges) {
+    vscode.window.showWarningMessage("Commit Changes is not available for the active output file.");
+    return;
+  }
+
+  await commitChangesFromMetadata(metadata);
+}
+
+export async function commitChangesForOutputUri(outputUri: vscode.Uri): Promise<void> {
+  const metadata = await getMetadataForOutputUri(outputUri, "No action metadata found for this run output.");
+  if (!metadata) {
+    return;
+  }
+
+  if (!getActiveOutputFollowUpStateFromMetadata(metadata).canCommitChanges) {
+    vscode.window.showWarningMessage("Commit Changes is not available for this run output.");
+    return;
+  }
+
+  await commitChangesFromMetadata(metadata);
+}
+
 export async function getActiveOutputFollowUpState(
   editor: vscode.TextEditor | undefined = vscode.window.activeTextEditor
 ): Promise<ActiveOutputFollowUpState> {
@@ -633,37 +700,155 @@ async function postCommentFromMetadata(metadata: ActionOutputMetadata): Promise<
     return;
   }
 
-  const commentBody = await resolveOutputFileText(metadata);
-  if (!metadata.prContext || !commentBody?.trim()) {
+  const outputText = await resolveOutputFileText(metadata);
+  if (!metadata.prContext || !outputText?.trim()) {
     vscode.window.showWarningMessage("This output file does not contain PR context and readable review text for posting.");
     return;
   }
 
-  const confirm = await vscode.window.showWarningMessage(
-    `Post the generated comment to ${metadata.prContext.owner}/${metadata.prContext.repo}#${metadata.prContext.pr.number}?`,
-    { modal: true, detail: "This will publish the current generated output as a GitHub issue comment." },
-    "Post Comment"
-  );
-  if (confirm !== "Post Comment") {
-    return;
-  }
+  const files = await getPullRequestFiles(metadata.prContext.owner, metadata.prContext.repo, metadata.prContext.pr.number, {
+    token
+  });
+  const review = buildPullRequestReviewFromOutput(outputText, files.length > 0 ? files : metadata.prContext.files ?? []);
 
   try {
-    const result = await postPullRequestComment(
+    const result = await createPullRequestReview(
       metadata.prContext.owner,
       metadata.prContext.repo,
       metadata.prContext.pr.number,
-      commentBody,
+      {
+        body: review.body,
+        comments: review.comments,
+        event: "COMMENT"
+      },
       { token }
     );
-    const postedAction = await vscode.window.showInformationMessage("Comment posted to pull request.", "Open Comment");
-    if (postedAction === "Open Comment" && result.htmlUrl) {
+    const postedAction = await vscode.window.showInformationMessage(
+      review.comments.length > 0
+        ? `PR feedback posted with ${review.comments.length} inline ${review.comments.length === 1 ? "suggestion" : "suggestions"}.`
+        : "PR feedback posted.",
+      "Open Review"
+    );
+    if (postedAction === "Open Review" && result.htmlUrl) {
       await vscode.env.openExternal(vscode.Uri.parse(result.htmlUrl));
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    vscode.window.showErrorMessage(`Failed to post PR comment: ${message}`);
+    vscode.window.showErrorMessage(`Failed to post PR feedback: ${message}`);
   }
+}
+
+function buildPullRequestReviewFromOutput(
+  outputText: string,
+  files: readonly PullRequestFile[]
+): { body: string; comments: Array<{ path: string; line: number; side: "RIGHT"; body: string }> } {
+  const parsed = parsePullRequestReviewSuggestions(outputText);
+  const commentableLines = buildCommentablePrLines(files);
+  const comments = parsed
+    .filter((suggestion) => commentableLines.get(suggestion.path)?.has(suggestion.line))
+    .map((suggestion) => ({
+      path: suggestion.path,
+      line: suggestion.line,
+      side: "RIGHT" as const,
+      body: `${suggestion.body}\n\n\`\`\`suggestion\n${suggestion.suggestion.trim()}\n\`\`\``
+    }));
+
+  const body = stripPullRequestReviewSuggestionBlocks(outputText).trim();
+  return {
+    body: body.length > 0 ? body : "CMSIS-Dev generated PR feedback.",
+    comments
+  };
+}
+
+function parsePullRequestReviewSuggestions(outputText: string): PullRequestReviewSuggestion[] {
+  const suggestions: PullRequestReviewSuggestion[] = [];
+  const blockPattern = /```cmsis-dev-suggestion\s*\n([\s\S]*?)\n```/g;
+  for (const match of outputText.matchAll(blockPattern)) {
+    const suggestion = parsePullRequestReviewSuggestionBlock(match[1]);
+    if (suggestion) {
+      suggestions.push(suggestion);
+    }
+  }
+
+  return suggestions;
+}
+
+function parsePullRequestReviewSuggestionBlock(blockText: string): PullRequestReviewSuggestion | undefined {
+  const normalized = blockText.replace(/\r\n/g, "\n");
+  const suggestionMarker = "\nsuggestion:\n";
+  const suggestionIndex = normalized.indexOf(suggestionMarker);
+  if (suggestionIndex === -1) {
+    return undefined;
+  }
+
+  const header = normalized.slice(0, suggestionIndex).trim();
+  const suggestion = normalized.slice(suggestionIndex + suggestionMarker.length).trim();
+  const path = header.match(/^file:\s*(.+)$/m)?.[1]?.trim();
+  const rawLine = header.match(/^line:\s*(\d+)$/m)?.[1];
+  const body = header.match(/^body:\s*([\s\S]+)$/m)?.[1]?.trim();
+  const line = rawLine ? Number.parseInt(rawLine, 10) : Number.NaN;
+
+  if (!path || !Number.isInteger(line) || line <= 0 || !body || !suggestion) {
+    return undefined;
+  }
+
+  return { path, line, body, suggestion };
+}
+
+function stripPullRequestReviewSuggestionBlocks(outputText: string): string {
+  return outputText.replace(/```cmsis-dev-suggestion\s*\n[\s\S]*?\n```/g, "").trim();
+}
+
+function buildCommentablePrLines(files: readonly PullRequestFile[]): Map<string, Set<number>> {
+  const linesByPath = new Map<string, Set<number>>();
+  for (const file of files) {
+    if (!file.patch) {
+      continue;
+    }
+
+    const lines = parseCommentablePatchLines(file.patch);
+    if (lines.size > 0) {
+      linesByPath.set(file.filename, lines);
+    }
+  }
+
+  return linesByPath;
+}
+
+function parseCommentablePatchLines(patch: string): Set<number> {
+  const lines = new Set<number>();
+  let newLine = 0;
+  for (const line of patch.split(/\r?\n/)) {
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      newLine = Number.parseInt(hunk[1], 10);
+      continue;
+    }
+
+    if (newLine <= 0) {
+      continue;
+    }
+
+    if (line.startsWith("+")) {
+      lines.add(newLine);
+      newLine += 1;
+      continue;
+    }
+
+    if (line.startsWith(" ")) {
+      lines.add(newLine);
+      newLine += 1;
+      continue;
+    }
+
+    if (line.startsWith("-")) {
+      continue;
+    }
+
+    newLine += 1;
+  }
+
+  return lines;
 }
 
 async function submitPullRequestFromMetadata(metadata: ActionOutputMetadata): Promise<void> {
@@ -772,6 +957,30 @@ async function submitPullRequestFromMetadata(metadata: ActionOutputMetadata): Pr
   }
 }
 
+async function commitChangesFromMetadata(metadata: ActionOutputMetadata): Promise<void> {
+  const context = metadata.localChangesContext;
+  if (!context?.rootPath) {
+    vscode.window.showWarningMessage("This output file does not contain enough local repository context to update the Source Control input box.");
+    return;
+  }
+
+  const outputText = metadata.commitDraft ? undefined : await resolveOutputFileText(metadata);
+  const draft = metadata.commitDraft ?? (outputText ? parseCommitDraftFromOutputFile(outputText) : undefined);
+  if (!draft) {
+    vscode.window.showWarningMessage("Could not derive a commit message from the current output file. Keep the Subject and Body structure intact.");
+    return;
+  }
+
+  const commitMessage = formatCommitMessage(draft);
+  const populated = await populateGitScmInput(commitMessage, context.rootPath);
+  if (!populated) {
+    vscode.window.showWarningMessage("Could not find a matching Git Source Control input box for this output.");
+    return;
+  }
+
+  vscode.window.showInformationMessage("Commit message inserted into the Source Control input box.");
+}
+
 async function getMetadataForActiveOutput(): Promise<ActionOutputMetadata | undefined> {
   const activeUri = vscode.window.activeTextEditor?.document.uri;
   if (!activeUri || activeUri.scheme !== "file") {
@@ -831,6 +1040,7 @@ async function collectInputValues(
 
       prContext = selected;
       const files = await getPullRequestFiles(selected.owner, selected.repo, selected.pr.number, { token });
+  prContext.files = files;
       const fileSections = formatFileSections(files);
 
       values[input.id] = `${selected.owner}/${selected.repo}#${selected.pr.number}`;
@@ -994,7 +1204,9 @@ async function collectInputValues(
         return undefined;
       }
 
-      const collected = await collectLocalChangesValues(selected, input.id);
+      const collected = await collectLocalChangesValues(selected, input.id, {
+        committedOnly: workflow.id === "create-pr" || workflow.type === "create-pr"
+      });
       if (!collected) {
         vscode.window.showInformationMessage(`No local changes found in ${path.basename(selected.rootPath)}.`);
         return undefined;
@@ -1576,20 +1788,27 @@ async function collectLocalChangesValues(selected: {
   workspaceFolderName: string;
   owner?: string;
   repo?: string;
-}, inputId: string): Promise<{ context: SelectedLocalChangesContext; values: Record<string, string> } | undefined> {
+}, inputId: string, options: { committedOnly?: boolean } = {}): Promise<{ context: SelectedLocalChangesContext; values: Record<string, string> } | undefined> {
   const defaultRef = await resolveDefaultBranchRef(selected.rootPath);
   if (!defaultRef) {
     throw new Error(`Could not resolve the default branch for repository '${selected.rootPath}'.`);
   }
 
   const currentBranch = (await runGitCommand(selected.rootPath, ["branch", "--show-current"])).trim() || "detached HEAD";
-  const changedEntries = await getTrackedDiffEntries(selected.rootPath, defaultRef.ref);
+  if (options.committedOnly && (await hasTrackedWorkingTreeChanges(selected.rootPath))) {
+    vscode.window.showWarningMessage(
+      "Create PR drafts from committed branch changes only. Commit or stash tracked working tree changes before creating the pull request."
+    );
+  }
+
+  const compareRef = options.committedOnly ? `${defaultRef.ref}...HEAD` : defaultRef.ref;
+  const changedEntries = await getTrackedDiffEntries(selected.rootPath, compareRef);
 
   if (changedEntries.length === 0) {
     return undefined;
   }
 
-  const fileSections = await formatLocalChangeSections(selected.rootPath, defaultRef.ref, changedEntries);
+  const fileSections = await formatLocalChangeSections(selected.rootPath, compareRef, changedEntries);
   const latestLocalReview = await findLatestLocalReviewSummary(selected.rootPath);
   const pullRequestTemplates = await readPullRequestTemplates(selected.rootPath);
   const changedFilesList = changedEntries.map((entry) => entry.displayPath);
@@ -1600,7 +1819,7 @@ async function collectLocalChangesValues(selected: {
     [`${inputId}_workspaceFolder`]: selected.workspaceFolderName,
     [`${inputId}_currentBranch`]: currentBranch,
     [`${inputId}_defaultBranch`]: defaultRef.shortName,
-    [`${inputId}_compareRef`]: defaultRef.ref,
+    [`${inputId}_compareRef`]: compareRef,
     [`${inputId}_changedFiles`]: formatSimpleList(uniqueChangedFiles, "(No changed files found)"),
     [`${inputId}_changedFilesCount`]: String(uniqueChangedFiles.length),
     [`${inputId}_fileSections`]: fileSections,
@@ -1612,7 +1831,7 @@ async function collectLocalChangesValues(selected: {
   values.workspaceFolder ??= selected.workspaceFolderName;
   values.currentBranch ??= currentBranch;
   values.defaultBranch ??= defaultRef.shortName;
-  values.compareRef ??= defaultRef.ref;
+  values.compareRef ??= compareRef;
   values.changedFiles ??= formatSimpleList(uniqueChangedFiles, "(No changed files found)");
   values.changedFilesCount ??= String(uniqueChangedFiles.length);
   values.fileSections ??= fileSections;
@@ -1632,7 +1851,7 @@ async function collectLocalChangesValues(selected: {
       owner: selected.owner,
       repo: selected.repo,
       currentBranch,
-      defaultRef: defaultRef.ref,
+      defaultRef: compareRef,
       defaultBranchName: defaultRef.shortName,
       changedFiles: uniqueChangedFiles.length
     },
@@ -1994,7 +2213,7 @@ function dedupeBranchRefCandidates(
 async function getTrackedDiffEntries(
   repoRoot: string,
   defaultRef: string
-): Promise<Array<{ status: string; displayPath: string; pathSpec: string }>> {
+): Promise<Array<{ status: string; displayPath: string; pathSpec: string; pathSpecs?: string[] }>> {
   const raw = await runGitCommand(repoRoot, ["diff", "--no-ext-diff", "--find-renames", "--name-status", defaultRef]);
   return raw
     .split(/\r?\n/)
@@ -2009,7 +2228,8 @@ async function getTrackedDiffEntries(
         return {
           status,
           displayPath: `${fromPath} -> ${toPath}`,
-          pathSpec: toPath
+          pathSpec: toPath,
+          pathSpecs: [fromPath, toPath]
         };
       }
 
@@ -2019,6 +2239,11 @@ async function getTrackedDiffEntries(
         pathSpec: parts[1] ?? parts[0]
       };
     });
+}
+
+async function hasTrackedWorkingTreeChanges(repoRoot: string): Promise<boolean> {
+  const raw = await runGitCommand(repoRoot, ["diff", "--no-ext-diff", "--name-only", "HEAD"]);
+  return raw.trim().length > 0;
 }
 
 async function formatLocalChangeSections(
@@ -2043,11 +2268,12 @@ async function runGitCommand(
   repoRoot: string,
   args: string[],
   options: {
+    input?: string;
     timeoutMs?: number;
   } = {}
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    cp.execFile(
+    const child = cp.execFile(
       "git",
       args,
       {
@@ -2070,6 +2296,10 @@ async function runGitCommand(
         resolve(stdout);
       }
     );
+
+    if (options.input !== undefined) {
+      child.stdin?.end(options.input);
+    }
   });
 }
 
@@ -2191,6 +2421,7 @@ async function writeOutputFile(
   issueContext?: SelectedIssueContext,
   localChangesContext?: SelectedLocalChangesContext
 ): Promise<vscode.Uri> {
+  const formattedContent = formatGeneratedMarkdown(content);
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     const contextSuffix = prContext
@@ -2205,7 +2436,7 @@ async function writeOutputFile(
     const doc = await vscode.workspace.openTextDocument(untitled);
     const editor = await vscode.window.showTextDocument(doc, { preview: false });
     await editor.edit((editBuilder) => {
-      editBuilder.insert(new vscode.Position(0, 0), content);
+      editBuilder.insert(new vscode.Position(0, 0), formattedContent);
     });
     return untitled;
   }
@@ -2222,9 +2453,55 @@ async function writeOutputFile(
         ? `-${path.basename(localChangesContext.rootPath)}`
         : "";
   const targetFile = path.join(targetDir, `${workflowId}${contextSegment}-${timestamp}.md`);
-  await fs.writeFile(targetFile, content, "utf8");
+    await fs.writeFile(targetFile, formattedContent, "utf8");
   return vscode.Uri.file(targetFile);
 }
+
+  function formatGeneratedMarkdown(content: string): string {
+    const topLevelSections = new Set(["findings", "suggested fixes per finding", "test gaps", "final summary"]);
+    let inFence = false;
+
+    return content
+      .split(/(\r?\n)/)
+      .reduce(
+        (state, part, index, parts) => {
+          if (index % 2 === 1) {
+            state.output.push(part);
+            return state;
+          }
+
+          const line = part;
+          if (/^\s*```/.test(line)) {
+            inFence = !inFence;
+            state.output.push(line);
+            return state;
+          }
+
+          if (inFence) {
+            state.output.push(line);
+            return state;
+          }
+
+          const match = line.match(/^(?:#{1,6}\s*)?(\d+)[).]\s+(.+?)\s*$/);
+          if (!match) {
+            state.output.push(line);
+            return state;
+          }
+
+          const sectionTitle = match[2].trim();
+          const normalizedTitle = sectionTitle.replace(/\s*\([^)]*\)\s*$/, "").toLowerCase();
+          if (!topLevelSections.has(normalizedTitle)) {
+            state.output.push(line);
+            return state;
+          }
+
+          state.output.push(`## ${match[1]}. ${sectionTitle}`);
+          return state;
+        },
+        { output: [] as string[] }
+      )
+      .output.join("");
+  }
 
 function formatCompactTimestamp(value: Date): string {
   const year = value.getUTCFullYear();
@@ -2317,12 +2594,12 @@ function resolveWorkflowFollowUps(workflow: Pick<WorkflowDefinition, "id" | "typ
 }
 
 function normalizeFollowUps(followUps: readonly WorkflowFollowUp[] | undefined): WorkflowFollowUp[] {
-  const allowed = new Set<WorkflowFollowUp>(["openReasoning", "openPr", "openIssue", "postComment", "submitPr"]);
+  const allowed = new Set<WorkflowFollowUp>(["openReasoning", "openPr", "openIssue", "postComment", "submitPr", "commitChanges"]);
   return Array.from(new Set((followUps ?? []).filter((followUp) => allowed.has(followUp)))) as WorkflowFollowUp[];
 }
 
 function resolveMetadataFollowUps(
-  metadata: Pick<ActionOutputMetadata, "workflowId" | "followUps" | "prContext" | "issueContext" | "pullRequestDraft">
+  metadata: Pick<ActionOutputMetadata, "workflowId" | "followUps" | "prContext" | "issueContext" | "pullRequestDraft" | "commitDraft">
 ): WorkflowFollowUp[] {
   const configured = normalizeFollowUps(metadata.followUps);
   if (configured.length > 0) {
@@ -2344,7 +2621,9 @@ function getActiveOutputFollowUpStateFromMetadata(metadata: ActionOutputMetadata
       Boolean(metadata.outputFile) &&
       Boolean(metadata.localChangesContext?.rootPath) &&
       Boolean(metadata.localChangesContext?.owner) &&
-      Boolean(metadata.localChangesContext?.repo)
+      Boolean(metadata.localChangesContext?.repo),
+    canCommitChanges:
+      followUps.includes("commitChanges") && Boolean(metadata.outputFile) && Boolean(metadata.localChangesContext?.rootPath)
   };
 }
 
@@ -2455,6 +2734,86 @@ function renderPullRequestDraftOutput(content: string, draft: PullRequestDraft |
   }
 
   return [`# ${draft.title}`, "", draft.body].join("\n").trim();
+}
+
+function parseCommitDraft(content: string): CommitDraft | undefined {
+  const normalized = content.trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const match = normalized.match(/^Subject:\s*(.+?)(?:\r?\n\r?\nBody:\s*([\s\S]+))?$/i);
+  if (!match) {
+    return undefined;
+  }
+
+  const subject = match[1].trim();
+  const body = match[2]?.trim();
+  if (!subject) {
+    return undefined;
+  }
+
+  return body ? { subject, body } : { subject };
+}
+
+function parseCommitDraftFromOutputFile(content: string): CommitDraft | undefined {
+  const direct = parseCommitDraft(content);
+  if (direct) {
+    return direct;
+  }
+
+  const normalized = stripExecutionInfoBlock(content).trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const lines = normalized.replace(/\r\n/g, "\n").split("\n");
+  const subject = lines[0].replace(/^#+\s*/, "").trim();
+  const body = lines.slice(1).join("\n").trim();
+  if (!subject) {
+    return undefined;
+  }
+
+  return body ? { subject, body } : { subject };
+}
+
+function renderCommitDraftOutput(content: string, draft: CommitDraft | undefined): string {
+  if (!draft) {
+    return content.trim();
+  }
+
+  return [`# ${draft.subject}`, "", draft.body ?? ""].join("\n").trim();
+}
+
+function formatCommitMessage(draft: CommitDraft): string {
+  return [draft.subject, draft.body ?? ""].join("\n\n").trim();
+}
+
+export async function populateGitScmInput(commitMessage: string, rootPath: string | undefined): Promise<boolean> {
+  const gitExtension = vscode.extensions.getExtension<{ getAPI(version: 1): GitExtensionApi }>("vscode.git");
+  if (!gitExtension) {
+    return false;
+  }
+
+  const gitApi = gitExtension.isActive ? gitExtension.exports.getAPI(1) : (await gitExtension.activate()).getAPI(1);
+  const repositories = gitApi.repositories;
+  const repository = rootPath
+    ? repositories.find((candidate) => isSameFilePath(candidate.rootUri.fsPath, rootPath))
+    : repositories.length === 1
+      ? repositories[0]
+      : undefined;
+
+  if (!repository) {
+    return false;
+  }
+
+  repository.inputBox.value = commitMessage;
+  await vscode.commands.executeCommand("workbench.view.scm");
+  return true;
+}
+
+function stripExecutionInfoBlock(content: string): string {
+  return content.replace(/^> \*Generated by CMSIS-Dev[^\n]*(?:\r?\n>.*)*\r?\n\r?\n?/, "");
 }
 
 function isSameFilePath(left: string, right: string): boolean {
@@ -2662,7 +3021,6 @@ function renderOutputWithExecutionInfo(
   details: { agentName: string; modelName: string; reasoningEffort?: CmsisDevReasoningEffort; metrics?: ActionMetrics }
 ): string {
   return [
-    `> Interface: **${details.agentName}**`,
     `> Model: **${details.modelName}**`,
     ...(details.reasoningEffort ? [`> Reasoning Effort: **${details.reasoningEffort}**`] : []),
     ...(details.metrics ? [`> Metrics: ${formatActionMetricsSummary(details.metrics)}`] : []),

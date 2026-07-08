@@ -23,6 +23,8 @@ import {
   resolveWorkflowRunsDirUri
 } from "./workflowConfig";
 import {
+  commitChangesForActiveOutput,
+  commitChangesForOutputUri,
   getActiveOutputFollowUpState,
   openIssueForActiveOutput,
   openIssueForOutputUri,
@@ -93,7 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void validateWorkflowTextDocument(event.document, workflowDiagnostics);
     }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
-      void updateActiveOutputContexts(editor);
+      void updateActiveOutputContexts(editor, runsProvider, runsTreeView);
     }),
     actionsTreeView,
     vscode.window.registerTreeDataProvider("cmsisDev.workflows", workflowsProvider),
@@ -111,6 +113,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       await openWorkflowInChat(chosen);
+    }),
+    vscode.commands.registerCommand("cmsisDev.commitMessageInChat", async () => {
+      const workflow = await resolveWorkflowById("commit-message");
+      if (!workflow) {
+        vscode.window.showWarningMessage("The 'Commit Message' workflow is not available.");
+        return;
+      }
+      await openWorkflowInChat(workflow, { populateScmCommitInput: true });
+    }),
+    vscode.commands.registerCommand("cmsisDev.reviewChangesInChat", async () => {
+      const workflow = await resolveWorkflowById("review-changes");
+      if (!workflow) {
+        vscode.window.showWarningMessage("The 'Review Changes' workflow is not available.");
+        return;
+      }
+      await openWorkflowInChat(workflow);
     }),
     vscode.commands.registerCommand("cmsisDev.planNextStepsForRunOutput", async (item?: unknown) => {
       const targetUri = resolveRunOutputUri(item);
@@ -155,6 +173,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         preview: true,
         preserveFocus: false
       });
+      const runOutputItem = await runsProvider.revealableOutputForUri(targetUri);
+      if (runOutputItem) {
+        await runsTreeView.reveal(runOutputItem, { select: true, focus: true });
+      }
     }),
     vscode.commands.registerCommand(
       "cmsisDev.deleteRuns",
@@ -206,7 +228,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
 
         await runsProvider.refresh();
-        await updateActiveOutputContexts(vscode.window.activeTextEditor);
+        await updateActiveOutputContexts(vscode.window.activeTextEditor, runsProvider, runsTreeView);
 
         if (failedFiles.length > 0) {
           vscode.window.showWarningMessage(
@@ -277,6 +299,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("cmsisDev.submitPrForActiveOutput", async (item?: unknown) => {
       const targetUri = resolveRunOutputUri(item);
       await (targetUri ? submitPrForOutputUri(targetUri) : submitPrForActiveOutput());
+    }),
+    vscode.commands.registerCommand("cmsisDev.commitChangesForActiveOutput", async (item?: unknown) => {
+      const targetUri = resolveRunOutputUri(item);
+      await (targetUri ? commitChangesForOutputUri(targetUri) : commitChangesForActiveOutput());
     })
   );
 
@@ -287,7 +313,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   for (const document of vscode.workspace.textDocuments) {
     await validateWorkflowTextDocument(document, workflowDiagnostics);
   }
-  await updateActiveOutputContexts(vscode.window.activeTextEditor);
+  await updateActiveOutputContexts(vscode.window.activeTextEditor, runsProvider, runsTreeView);
   void startMcpServer(context);
 }
 
@@ -573,13 +599,27 @@ function createWorkflowWatchers(configuredWorkflowPath: string): vscode.FileSyst
   return Array.from(new Set(patterns)).map((pattern) => vscode.workspace.createFileSystemWatcher(pattern));
 }
 
-async function updateActiveOutputContexts(editor: vscode.TextEditor | undefined): Promise<void> {
+async function updateActiveOutputContexts(
+  editor: vscode.TextEditor | undefined,
+  runsProvider?: RunsProvider,
+  runsTreeView?: vscode.TreeView<RunOutputItem | unknown>
+): Promise<void> {
   const followUpState = await getActiveOutputFollowUpState(editor);
   await Promise.all([
     vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canOpenReasoning", followUpState.canOpenReasoning),
     vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canOpenPr", followUpState.canOpenPr),
     vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canOpenIssue", followUpState.canOpenIssue),
     vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canPostComment", followUpState.canPostComment),
-    vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canSubmitPr", followUpState.canSubmitPr)
+    vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canSubmitPr", followUpState.canSubmitPr),
+    vscode.commands.executeCommand("setContext", "cmsisDev.activeOutput.canCommitChanges", followUpState.canCommitChanges)
   ]);
+
+  if (!editor || !runsProvider || !runsTreeView) {
+    return;
+  }
+
+  const runOutputItem = await runsProvider.revealableOutputForUri(editor.document.uri);
+  if (runOutputItem) {
+    await runsTreeView.reveal(runOutputItem, { select: true, focus: false });
+  }
 }

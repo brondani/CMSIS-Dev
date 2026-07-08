@@ -6,7 +6,7 @@ import { z } from "zod";
 import { resolveWorkflowConfigUri } from "./workflowConfig";
 
 const workflowInputTypeSchema = z.enum(["text", "github-pr-context", "github-issue-context", "git-local-changes-context", "run-output-context", "github-workflow-run-context"]);
-const workflowFollowUpSchema = z.enum(["openReasoning", "openPr", "openIssue", "postComment", "submitPr"]);
+const workflowFollowUpSchema = z.enum(["openReasoning", "openPr", "openIssue", "postComment", "submitPr", "commitChanges"]);
 
 const workflowInputSchema = z
   .object({

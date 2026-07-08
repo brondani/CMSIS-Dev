@@ -73,6 +73,16 @@ export class RunsProvider implements vscode.TreeDataProvider<RunsTreeItem> {
     this.onDidChangeTreeDataEmitter.fire();
   }
 
+  getParent(): vscode.ProviderResult<RunsTreeItem> {
+    return undefined;
+  }
+
+  async revealableOutputForUri(uri: vscode.Uri): Promise<RunOutputItem | undefined> {
+    await this.refresh();
+    const targetPath = normalizeFilePath(uri.fsPath);
+    return this.outputs.find((output) => normalizeFilePath(output.uri.fsPath) === targetPath);
+  }
+
   getTreeItem(element: RunsTreeItem): vscode.TreeItem {
     return element;
   }
@@ -122,6 +132,11 @@ export class RunsProvider implements vscode.TreeDataProvider<RunsTreeItem> {
   }
 }
 
+function normalizeFilePath(fsPath: string): string {
+  const normalized = path.normalize(fsPath);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 async function readRunOutputMetadata(outputUri: vscode.Uri): Promise<RunOutputMetadata | undefined> {
   try {
     const raw = await fs.readFile(`${outputUri.fsPath}.meta.json`, "utf8");
@@ -141,6 +156,7 @@ function toRunOutputContextValue(followUpState: {
   canOpenIssue: boolean;
   canPostComment: boolean;
   canSubmitPr: boolean;
+  canCommitChanges: boolean;
 }, metadata?: RunOutputMetadata): string {
   const tokens = ["cmsisDev.runOutput"];
   if (followUpState.canOpenReasoning) {
@@ -157,6 +173,9 @@ function toRunOutputContextValue(followUpState: {
   }
   if (followUpState.canSubmitPr) {
     tokens.push("canSubmitPr");
+  }
+  if (followUpState.canCommitChanges) {
+    tokens.push("canCommitChanges");
   }
   if (
     metadata?.workflowId === "review-pr" ||

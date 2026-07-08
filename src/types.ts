@@ -11,7 +11,8 @@ export type WorkflowFollowUp =
   | "openPr"
   | "openIssue"
   | "postComment"
-  | "submitPr";
+  | "submitPr"
+  | "commitChanges";
 
 export interface WorkflowDefinition {
   id: string;

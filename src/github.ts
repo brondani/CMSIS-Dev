@@ -62,6 +62,18 @@ export interface WorkflowRunJobSummary {
   }>;
 }
 
+export interface PullRequestReviewCommentInput {
+  path: string;
+  line: number;
+  side: "RIGHT";
+  body: string;
+}
+
+export interface CreatedPullRequestReview {
+  htmlUrl?: string;
+  id?: number;
+}
+
 export async function resolveRepoFromWorkspace(): Promise<RepoInfo | undefined> {
   const repos = await resolveReposFromWorkspace();
   return repos[0] ? { owner: repos[0].owner, repo: repos[0].repo } : undefined;
@@ -369,6 +381,33 @@ export async function postPullRequestComment(
 ): Promise<{ htmlUrl?: string; id?: number }> {
   const url = `https://api.github.com/repos/${owner}/${repo}/issues/${number}/comments`;
   const response = await postJson<any>(url, { body }, options.token);
+  return {
+    htmlUrl: response.html_url,
+    id: response.id
+  };
+}
+
+export async function createPullRequestReview(
+  owner: string,
+  repo: string,
+  number: number,
+  payload: {
+    body: string;
+    comments?: PullRequestReviewCommentInput[];
+    event?: "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+  },
+  options: GitHubRequestOptions = {}
+): Promise<CreatedPullRequestReview> {
+  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/reviews`;
+  const response = await postJson<any>(
+    url,
+    {
+      body: payload.body,
+      event: payload.event ?? "COMMENT",
+      comments: payload.comments ?? []
+    },
+    options.token
+  );
   return {
     htmlUrl: response.html_url,
     id: response.id
